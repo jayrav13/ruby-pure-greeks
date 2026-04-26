@@ -1930,6 +1930,23 @@ git commit -m "feat: add implied volatility solver via Brent's method"
 
 The export script is **a one-shot manual run**, not part of the gem's runtime. It documents the SQL query used so future regenerations are reproducible.
 
+**Connecting to Tenor's DB.** The connection string lives in `~/Code/tenor/.mcp.json` under `mcpServers.postgres-prod.args[2]`. Read it directly and pipe it into `psql`:
+
+```bash
+PG_URL=$(jq -r '.mcpServers."postgres-prod".args[2]' ~/Code/tenor/.mcp.json)
+psql "$PG_URL" -c "\d options.snapshots"   # smoke-test: should describe table
+```
+
+This is read-only — only run `SELECT` statements. The MCP path (`mcp__postgres-prod__query`) is also fine if it's wired into the current session, but `psql` works with no MCP setup.
+
+**Risk-free rate sourcing.** Before writing the export, run `\d options.snapshots` (and any related rate/config tables) to see whether Tenor stores the rate per-snapshot. Three cases:
+
+1. **Stored per-snapshot** (most likely): include the rate column directly in the `SELECT` below. Done.
+2. **Stored as a constant in Tenor config**: read the constant from Tenor's source, embed it in every fixture row, document the value in the fixture's `_meta` block.
+3. **Computed at run-time from FRED**: pull the FRED CSV for the matching snapshot dates — `https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO` (or whichever series Tenor uses; check Tenor's source). No FRED API key needed for the CSV endpoint. Embed per-row in the fixture.
+
+The existing query below assumes case (1) and pulls a `risk_free_rate` column. Adjust if the schema differs.
+
 - [ ] **Step 1: Write the export script**
 
 Create `tools/golden_dataset_export.rb`:
@@ -1956,6 +1973,7 @@ GOLDEN_DATASET_QUERY = <<~SQL
     s.implied_volatility,
     s.snapshot_date,
     COALESCE(s.dividend_yield, 0) AS dividend_yield,
+    s.risk_free_rate,  -- adjust if Tenor stores this elsewhere; see notes above Step 1
     g.delta,
     g.gamma,
     g.theta,
@@ -1973,13 +1991,14 @@ GOLDEN_DATASET_QUERY = <<~SQL
   LIMIT 500;
 SQL
 
-# Risk-free rate is stored separately in Tenor (config or per-snapshot).
-# For the fixture, use a stable assumption. The implementing session should
-# confirm with the user what rate Tenor's reference run used and document it.
+# If Tenor stores risk-free rate per-snapshot, the SELECT above pulls it
+# directly. If it's a constant or pulled from FRED, see the prose notes
+# above Step 1 for the FRED CSV fallback. Use this constant only as a
+# last resort.
 DEFAULT_RISK_FREE_RATE = 0.05
 
 puts GOLDEN_DATASET_QUERY
-puts "(Run this via mcp__postgres-prod__query, then convert the result to JSON shaped like:)"
+puts "(Pipe the result into JSON shaped like:)"
 puts <<~JSON
   [
     {
@@ -2006,21 +2025,27 @@ puts <<~JSON
 JSON
 ```
 
-- [ ] **Step 2: Run the export manually**
+- [ ] **Step 2: Inspect schema and confirm rate sourcing**
 
-Use the MCP tool to execute the query:
-
+```bash
+PG_URL=$(jq -r '.mcpServers."postgres-prod".args[2]' ~/Code/tenor/.mcp.json)
+psql "$PG_URL" -c "\d options.snapshots"
+psql "$PG_URL" -c "\d options.greeks"
 ```
-mcp__postgres-prod__query with query=<contents of GOLDEN_DATASET_QUERY>
+
+If `risk_free_rate` is on `options.snapshots`, proceed with the query as-is. If it's elsewhere, adjust the SELECT. If Tenor pulls live from FRED, switch to the FRED CSV approach and document the series ID in the fixture's `_meta`.
+
+- [ ] **Step 3: Run the export**
+
+```bash
+psql "$PG_URL" -A -F $'\t' --pset=footer=off -c "<contents of GOLDEN_DATASET_QUERY>" > /tmp/tenor_golden.tsv
 ```
 
-- [ ] **Step 3: Confirm risk-free rate with user**
-
-Before writing the fixture, ask the user: "What risk-free rate did Tenor's QuantLib run use? I'll embed it per-row in the golden fixture." Record the answer.
+(Or use the MCP path `mcp__postgres-prod__query` if it's wired up — same result.)
 
 - [ ] **Step 4: Write fixture**
 
-Transform the MCP query results into the JSON shape shown in step 1, save to `spec/regression/fixtures/tenor_golden.json`.
+Transform the TSV/MCP result into the JSON shape shown in step 1, save to `spec/regression/fixtures/tenor_golden.json`. Include a top-level `_meta` block recording the export date, source DB, and rate-sourcing decision (per-snapshot column / Tenor constant / FRED series ID).
 
 - [ ] **Step 5: Commit**
 
@@ -2265,11 +2290,7 @@ git commit -m "perf: add batch benchmark and v0.2 performance plan"
 
 The README is for developers who want to install, contribute to, or release the gem. End-user usage docs live on the GitHub Pages site (Task 27). The README should be short and scannable.
 
-- [ ] **Step 1: Confirm the GitHub owner/repo slug**
-
-The badges and links below assume the repo lives at `github.com/<OWNER>/pure_greeks`. Before writing the file, ask the user (or read `git remote -v` if a remote is already configured) and substitute the real owner everywhere. Default working assumption: `jayrav13` (matches the local git config). If the user names a different owner, replace all four occurrences below.
-
-- [ ] **Step 2: Write README**
+- [ ] **Step 1: Write README**
 
 Replace `README.md` with:
 
@@ -2277,12 +2298,12 @@ Replace `README.md` with:
 # pure_greeks
 
 [![Gem Version](https://badge.fury.io/rb/pure_greeks.svg)](https://rubygems.org/gems/pure_greeks)
-[![CI](https://github.com/jayrav13/pure_greeks/actions/workflows/ci.yml/badge.svg)](https://github.com/jayrav13/pure_greeks/actions/workflows/ci.yml)
+[![CI](https://github.com/jayrav13/ruby-pure-greeks/actions/workflows/ci.yml/badge.svg)](https://github.com/jayrav13/ruby-pure-greeks/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Pure-Ruby options Greeks (delta, gamma, theta, vega, rho), pricing, and implied volatility for vanilla European and American options. No Python, no QuantLib system dep, no native code.
 
-**Documentation, examples, and engine internals: https://jayrav13.github.io/pure_greeks/**
+**Documentation, examples, and engine internals: https://jayrav13.github.io/ruby-pure-greeks/**
 
 ## Installation
 
@@ -2317,14 +2338,14 @@ option.price   # => 4.27
 option.delta   # => 0.42
 ```
 
-For the full API, the implied-volatility solver, how the three engines fall back to one another, validation methodology, and limitations, see the [documentation site](https://jayrav13.github.io/pure_greeks/).
+For the full API, the implied-volatility solver, how the three engines fall back to one another, validation methodology, and limitations, see the [documentation site](https://jayrav13.github.io/ruby-pure-greeks/).
 
 ## Development
 
 Clone and bootstrap:
 
 ```bash
-git clone https://github.com/jayrav13/pure_greeks.git
+git clone https://github.com/jayrav13/ruby-pure-greeks.git
 cd pure_greeks
 bin/setup
 ```
@@ -2365,14 +2386,14 @@ The RubyGems version badge above will refresh automatically once the new version
 
 ## Contributing
 
-Bug reports and pull requests are welcome at https://github.com/jayrav13/pure_greeks. Please run `bundle exec rspec` and `bundle exec rubocop` locally before opening a PR. CI runs both on Ruby 3.2, 3.3, and 3.4.
+Bug reports and pull requests are welcome at https://github.com/jayrav13/ruby-pure-greeks. Please run `bundle exec rspec` and `bundle exec rubocop` locally before opening a PR. CI runs both on Ruby 3.2, 3.3, and 3.4.
 
 ## License
 
 MIT. See `LICENSE.txt`.
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
 git add README.md
@@ -2459,11 +2480,7 @@ The README only covers dev setup. End-user usage docs — the API surface, examp
 - Create: `docs/validation.md`
 - Create: `docs/limitations.md`
 
-- [ ] **Step 1: Confirm the GitHub owner/repo slug**
-
-Same step as Task 24: substitute the real owner for `<OWNER>` (default `jayrav13`) in `_config.yml` if the user wants a different value than what `git remote -v` shows. Pages URLs assume `github.com/<OWNER>/pure_greeks`.
-
-- [ ] **Step 2: Create `docs/_config.yml`**
+- [ ] **Step 1: Create `docs/_config.yml`**
 
 ```yaml
 title: pure_greeks
@@ -2472,8 +2489,8 @@ theme: jekyll-theme-cayman
 
 # These two are surfaced by the cayman theme as header buttons.
 github:
-  repository_url: https://github.com/jayrav13/pure_greeks
-  zip_url: https://github.com/jayrav13/pure_greeks/archive/refs/heads/main.zip
+  repository_url: https://github.com/jayrav13/ruby-pure-greeks
+  zip_url: https://github.com/jayrav13/ruby-pure-greeks/archive/refs/heads/main.zip
 
 # Don't try to render fixtures or specs if anyone copies them in here later.
 exclude:
@@ -2482,7 +2499,7 @@ exclude:
   - Gemfile.lock
 ```
 
-- [ ] **Step 3: Create `docs/index.md`**
+- [ ] **Step 2: Create `docs/index.md`**
 
 This is the landing page. Keep it tight; it should funnel readers to the right sub-page.
 
@@ -2508,10 +2525,10 @@ gem "pure_greeks"
 
 ## Source & releases
 
-[GitHub repository](https://github.com/jayrav13/pure_greeks) · [RubyGems](https://rubygems.org/gems/pure_greeks) · [Changelog](https://github.com/jayrav13/pure_greeks/blob/main/CHANGELOG.md)
+[GitHub repository](https://github.com/jayrav13/ruby-pure-greeks) · [RubyGems](https://rubygems.org/gems/pure_greeks) · [Changelog](https://github.com/jayrav13/ruby-pure-greeks/blob/main/CHANGELOG.md)
 ```
 
-- [ ] **Step 4: Create `docs/usage.md`**
+- [ ] **Step 3: Create `docs/usage.md`**
 
 This page absorbs the usage examples that previously lived in the README. Move them verbatim and expand: include the IV-solver example, all five Greeks, the `calculation_model` accessor, and a note on each constructor argument.
 
@@ -2586,7 +2603,7 @@ option.implied_volatility   # => 0.342
 (Document any additional accessors or behavior added during implementation — keep this table in sync with `lib/pure_greeks/option.rb`.)
 ```
 
-- [ ] **Step 5: Create `docs/engines.md`**
+- [ ] **Step 4: Create `docs/engines.md`**
 
 ```markdown
 ---
@@ -2622,7 +2639,7 @@ option.calculation_model  # => :crr_binomial_american | :black_scholes_european 
 QuantLib is the industry-standard option pricer, but its Ruby binding is a binary dep that's painful in production: you need a system install, version pinning is fragile, and it's hard to deploy on serverless platforms. `pure_greeks` is a deliberately scoped subset — the vanilla American/European Greeks that most equity-option workloads actually need — implemented in pure Ruby so it installs anywhere `gem install` works.
 ```
 
-- [ ] **Step 6: Create `docs/validation.md`**
+- [ ] **Step 5: Create `docs/validation.md`**
 
 ```markdown
 ---
@@ -2651,7 +2668,7 @@ These tolerances are tighter than the noise floor of typical market data (bid-as
 The fixture is regenerated manually (not on every CI run) by the on-call engineer when the source dataset changes. See `spec/regression/export_tenor_golden.rb` for the SQL query and the expected output shape. The export tool is read-only against the source database.
 ```
 
-- [ ] **Step 7: Create `docs/limitations.md`**
+- [ ] **Step 6: Create `docs/limitations.md`**
 
 ```markdown
 ---
@@ -2671,7 +2688,7 @@ title: Limitations
 If any of these blocks your use case, please open an issue describing the workload — that drives v0.2 prioritization.
 ```
 
-- [ ] **Step 8: Enable Pages in repo settings**
+- [ ] **Step 7: Enable Pages in repo settings**
 
 GitHub Pages cannot be enabled from the local clone; it must be turned on once in the GitHub UI. Tell the user (don't attempt to do it from the CLI):
 
@@ -2679,14 +2696,14 @@ GitHub Pages cannot be enabled from the local clone; it must be turned on once i
 
 No GitHub Actions workflow is needed for this — Pages auto-builds when the source is `main /docs`.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add docs/
 git commit -m "docs: GitHub Pages site for usage, engines, validation, limitations"
 ```
 
-- [ ] **Step 10: Verify locally (optional)**
+- [ ] **Step 9: Verify locally (optional)**
 
 If the implementer wants to preview before pushing:
 
