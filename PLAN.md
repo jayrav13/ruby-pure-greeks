@@ -2258,19 +2258,31 @@ git commit -m "perf: add batch benchmark and v0.2 performance plan"
 
 ## Phase 9: Documentation & Release
 
-### Task 24: README
+### Task 24: README (developer-focused)
 
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Write README**
+The README is for developers who want to install, contribute to, or release the gem. End-user usage docs live on the GitHub Pages site (Task 27). The README should be short and scannable.
+
+- [ ] **Step 1: Confirm the GitHub owner/repo slug**
+
+The badges and links below assume the repo lives at `github.com/<OWNER>/pure_greeks`. Before writing the file, ask the user (or read `git remote -v` if a remote is already configured) and substitute the real owner everywhere. Default working assumption: `jayrav13` (matches the local git config). If the user names a different owner, replace all four occurrences below.
+
+- [ ] **Step 2: Write README**
 
 Replace `README.md` with:
 
 ```markdown
 # pure_greeks
 
+[![Gem Version](https://badge.fury.io/rb/pure_greeks.svg)](https://rubygems.org/gems/pure_greeks)
+[![CI](https://github.com/jayrav13/pure_greeks/actions/workflows/ci.yml/badge.svg)](https://github.com/jayrav13/pure_greeks/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Pure-Ruby options Greeks (delta, gamma, theta, vega, rho), pricing, and implied volatility for vanilla European and American options. No Python, no QuantLib system dep, no native code.
+
+**Documentation, examples, and engine internals: https://jayrav13.github.io/pure_greeks/**
 
 ## Installation
 
@@ -2280,76 +2292,91 @@ Add to your Gemfile:
 gem "pure_greeks"
 ```
 
-## Usage
+Then `bundle install`. Or install directly:
+
+```bash
+gem install pure_greeks
+```
+
+Requires Ruby 3.2 or newer. No system dependencies.
+
+## Quick example
 
 ```ruby
 require "pure_greeks"
 
 option = PureGreeks::Option.new(
-  exercise_style: :american,
-  type: :call,
-  strike: 150.0,
-  expiration: Date.new(2026, 6, 19),
-  underlying_price: 148.5,
-  implied_volatility: 0.35,
-  risk_free_rate: 0.05,
-  dividend_yield: 0.0,
+  exercise_style: :american, type: :call,
+  strike: 150.0, expiration: Date.new(2026, 6, 19),
+  underlying_price: 148.5, implied_volatility: 0.35,
+  risk_free_rate: 0.05, dividend_yield: 0.0,
   valuation_date: Date.today
 )
 
-option.price                # => 4.27
-option.delta                # => 0.42
-option.gamma                # => 0.018
-option.theta                # => -0.012  (per calendar day)
-option.vega                 # => 0.31    (per 1% vol move)
-option.rho                  # => 0.08    (per 1% rate move)
-option.calculation_model    # => :crr_binomial_american
-
-# Solve for implied volatility:
-option = PureGreeks::Option.new(
-  exercise_style: :european,
-  type: :call,
-  strike: 150.0,
-  expiration: Date.new(2026, 6, 19),
-  underlying_price: 148.5,
-  market_price: 5.20,
-  risk_free_rate: 0.05,
-  dividend_yield: 0.0,
-  valuation_date: Date.today
-)
-option.implied_volatility   # => 0.342  (solved via Brent's method)
+option.price   # => 4.27
+option.delta   # => 0.42
 ```
 
-## How it works
+For the full API, the implied-volatility solver, how the three engines fall back to one another, validation methodology, and limitations, see the [documentation site](https://jayrav13.github.io/pure_greeks/).
 
-A three-tier fallback chain:
+## Development
 
-1. **CRR Binomial American (200 steps)** — for American-exercise options
-2. **Black-Scholes European (closed-form)** — for European or as fallback
-3. **Intrinsic value** — for zero/negative IV
+Clone and bootstrap:
 
-Selection is automatic. The engine that ran is exposed via `option.calculation_model`.
+```bash
+git clone https://github.com/jayrav13/pure_greeks.git
+cd pure_greeks
+bin/setup
+```
 
-## Validation
+Run the test suite:
 
-The engines have been regression-tested against ~500 historical option snapshots whose Greeks were computed by QuantLib (CRR Binomial American 200-step). All Greeks agree to within 1e-3 (delta, theta, vega) or 1e-4 (gamma).
+```bash
+bundle exec rspec
+```
 
-## Limitations
+Run the linter:
 
-- v0.1 is pure Ruby. Throughput is ~10× slower than QuantLib's C++ for American options. Acceptable for interactive use; for high-volume batch jobs, see `BENCHMARKS.md`.
-- IV solver inverts the BS European pricer even for American options. For American options with significant early-exercise premium, the solved IV may be slightly off.
-- No support for exotic exercise (Bermudan, Asian, barrier) or non-vanilla payoffs.
+```bash
+bundle exec rubocop
+```
+
+Open a console with the gem loaded:
+
+```bash
+bin/console
+```
+
+To install this gem onto your local machine for trial use:
+
+```bash
+bundle exec rake install
+```
+
+## Releasing
+
+1. Update `lib/pure_greeks/version.rb`.
+2. Update `CHANGELOG.md` with the new version and date.
+3. Run `bundle exec rspec` and `bundle exec rubocop` — both must pass.
+4. Run the regression suite: `bundle exec rspec spec/regression`.
+5. Run `bundle exec rake release`. This creates a git tag, pushes commits and tags to GitHub, and pushes the `.gem` to rubygems.org.
+
+The RubyGems version badge above will refresh automatically once the new version indexes (usually within a minute).
+
+## Contributing
+
+Bug reports and pull requests are welcome at https://github.com/jayrav13/pure_greeks. Please run `bundle exec rspec` and `bundle exec rubocop` locally before opening a PR. CI runs both on Ruby 3.2, 3.3, and 3.4.
 
 ## License
 
-MIT.
+MIT. See `LICENSE.txt`.
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add README.md
-git commit -m "docs: write README with usage examples"
+git commit -m "docs: dev-focused README with badges, link to docs site"
 ```
 
 ### Task 25: CHANGELOG
@@ -2420,7 +2447,257 @@ git add .github/workflows/ci.yml
 git commit -m "ci: matrix-test on Ruby 3.2, 3.3, 3.4"
 ```
 
-### Task 27: Tag 0.1.0
+### Task 27: GitHub Pages documentation site
+
+The README only covers dev setup. End-user usage docs — the API surface, examples, how the three engines fall back, validation methodology, and limitations — live on a GitHub Pages site served from `docs/` on `main`. We use a stock Jekyll theme (`cayman`) so there is no toolchain to maintain locally; GitHub builds the site on push.
+
+**Files:**
+- Create: `docs/_config.yml`
+- Create: `docs/index.md`
+- Create: `docs/usage.md`
+- Create: `docs/engines.md`
+- Create: `docs/validation.md`
+- Create: `docs/limitations.md`
+
+- [ ] **Step 1: Confirm the GitHub owner/repo slug**
+
+Same step as Task 24: substitute the real owner for `<OWNER>` (default `jayrav13`) in `_config.yml` if the user wants a different value than what `git remote -v` shows. Pages URLs assume `github.com/<OWNER>/pure_greeks`.
+
+- [ ] **Step 2: Create `docs/_config.yml`**
+
+```yaml
+title: pure_greeks
+description: Pure-Ruby options Greeks, pricing, and implied volatility — no QuantLib, no native code.
+theme: jekyll-theme-cayman
+
+# These two are surfaced by the cayman theme as header buttons.
+github:
+  repository_url: https://github.com/jayrav13/pure_greeks
+  zip_url: https://github.com/jayrav13/pure_greeks/archive/refs/heads/main.zip
+
+# Don't try to render fixtures or specs if anyone copies them in here later.
+exclude:
+  - "*.gem"
+  - Gemfile
+  - Gemfile.lock
+```
+
+- [ ] **Step 3: Create `docs/index.md`**
+
+This is the landing page. Keep it tight; it should funnel readers to the right sub-page.
+
+```markdown
+---
+title: pure_greeks
+---
+
+# pure_greeks
+
+Pure-Ruby options Greeks (delta, gamma, theta, vega, rho), pricing, and implied volatility for vanilla European and American options. No Python dependency, no QuantLib system install, no native code.
+
+```ruby
+gem "pure_greeks"
+```
+
+## Where to go next
+
+- **[Usage](usage.html)** — full API reference with worked examples for pricing, Greeks, and implied volatility.
+- **[How the engines work](engines.html)** — Black-Scholes, CRR binomial, intrinsic, and how the fallback chain selects between them.
+- **[Validation](validation.html)** — methodology and tolerances for regression-testing against QuantLib output.
+- **[Limitations](limitations.html)** — what v0.1 does not cover and why.
+
+## Source & releases
+
+[GitHub repository](https://github.com/jayrav13/pure_greeks) · [RubyGems](https://rubygems.org/gems/pure_greeks) · [Changelog](https://github.com/jayrav13/pure_greeks/blob/main/CHANGELOG.md)
+```
+
+- [ ] **Step 4: Create `docs/usage.md`**
+
+This page absorbs the usage examples that previously lived in the README. Move them verbatim and expand: include the IV-solver example, all five Greeks, the `calculation_model` accessor, and a note on each constructor argument.
+
+```markdown
+---
+title: Usage
+---
+
+# Usage
+
+## Pricing and Greeks (American)
+
+```ruby
+require "pure_greeks"
+
+option = PureGreeks::Option.new(
+  exercise_style: :american,
+  type: :call,
+  strike: 150.0,
+  expiration: Date.new(2026, 6, 19),
+  underlying_price: 148.5,
+  implied_volatility: 0.35,
+  risk_free_rate: 0.05,
+  dividend_yield: 0.0,
+  valuation_date: Date.today
+)
+
+option.price                # => 4.27
+option.delta                # => 0.42
+option.gamma                # => 0.018
+option.theta                # => -0.012  (per calendar day)
+option.vega                 # => 0.31    (per 1% vol move)
+option.rho                  # => 0.08    (per 1% rate move)
+option.calculation_model    # => :crr_binomial_american
+```
+
+## Solving for implied volatility
+
+Pass `market_price:` instead of `implied_volatility:`. The solver uses Brent's method.
+
+```ruby
+option = PureGreeks::Option.new(
+  exercise_style: :european,
+  type: :call,
+  strike: 150.0,
+  expiration: Date.new(2026, 6, 19),
+  underlying_price: 148.5,
+  market_price: 5.20,
+  risk_free_rate: 0.05,
+  dividend_yield: 0.0,
+  valuation_date: Date.today
+)
+
+option.implied_volatility   # => 0.342
+```
+
+## Constructor arguments
+
+| Argument | Type | Notes |
+|---|---|---|
+| `exercise_style` | `:american` or `:european` | Routes to CRR or Black-Scholes. |
+| `type` | `:call` or `:put` | |
+| `strike` | Numeric | |
+| `expiration` | `Date` | |
+| `underlying_price` | Numeric | |
+| `implied_volatility` | Numeric | Annualized, decimal (0.35 == 35%). Either this or `market_price`, not both. |
+| `market_price` | Numeric | Triggers the IV solver. Either this or `implied_volatility`, not both. |
+| `risk_free_rate` | Numeric | Annualized, decimal. |
+| `dividend_yield` | Numeric | Annualized, decimal. |
+| `valuation_date` | `Date` | Defaults to `Date.today` if omitted. |
+
+(Document any additional accessors or behavior added during implementation — keep this table in sync with `lib/pure_greeks/option.rb`.)
+```
+
+- [ ] **Step 5: Create `docs/engines.md`**
+
+```markdown
+---
+title: How the engines work
+---
+
+# How the engines work
+
+`pure_greeks` ships three pricing engines and a deterministic fallback chain that picks one for each call.
+
+## The three engines
+
+1. **Black-Scholes European (closed-form)** — analytic formula for European exercise. Cheap, exact within the model.
+2. **CRR Binomial American** — Cox-Ross-Rubinstein binomial tree, 200 steps. Captures early-exercise premium for American options. Greeks are extracted from the tree (delta and gamma from t=0 nodes, theta from t=1 vs t=0, vega and rho via finite difference over re-priced trees).
+3. **Intrinsic value** — `max(S - K, 0)` for calls, `max(K - S, 0)` for puts. The terminal fallback when implied volatility is zero or negative.
+
+## Fallback chain
+
+Selection order is fixed and deterministic:
+
+1. If `implied_volatility <= 0`, use **Intrinsic**.
+2. Else if `exercise_style == :american`, use **CRR Binomial American**.
+3. Else use **Black-Scholes European**.
+
+The engine that produced the result is always exposed on the option:
+
+```ruby
+option.calculation_model  # => :crr_binomial_american | :black_scholes_european | :intrinsic
+```
+
+## Why this exists
+
+QuantLib is the industry-standard option pricer, but its Ruby binding is a binary dep that's painful in production: you need a system install, version pinning is fragile, and it's hard to deploy on serverless platforms. `pure_greeks` is a deliberately scoped subset — the vanilla American/European Greeks that most equity-option workloads actually need — implemented in pure Ruby so it installs anywhere `gem install` works.
+```
+
+- [ ] **Step 6: Create `docs/validation.md`**
+
+```markdown
+---
+title: Validation
+---
+
+# Validation
+
+The engines have been regression-tested against a frozen dataset of ~500 historical option snapshots whose Greeks were computed by QuantLib (CRR Binomial American, 200 steps). The fixture and the script that generates it live in `spec/regression/`.
+
+## Tolerances
+
+| Quantity | Absolute tolerance |
+|---|---|
+| Price | 1e-3 |
+| Delta | 1e-3 |
+| Gamma | 1e-4 |
+| Theta (per calendar day) | 1e-3 |
+| Vega (per 1% vol move) | 1e-3 |
+| Rho (per 1% rate move) | 1e-3 |
+
+These tolerances are tighter than the noise floor of typical market data (bid-ask spread, last-trade staleness), so any drift large enough to matter for downstream analytics will fail CI.
+
+## How to regenerate the fixture
+
+The fixture is regenerated manually (not on every CI run) by the on-call engineer when the source dataset changes. See `spec/regression/export_tenor_golden.rb` for the SQL query and the expected output shape. The export tool is read-only against the source database.
+```
+
+- [ ] **Step 7: Create `docs/limitations.md`**
+
+```markdown
+---
+title: Limitations
+---
+
+# Limitations
+
+`pure_greeks` v0.1 is intentionally scoped. Things it does **not** do:
+
+- **Throughput.** Pure Ruby is roughly 10× slower than QuantLib's C++ for American options. Fine for interactive use and most batch jobs; see `BENCHMARKS.md` in the repo for measured numbers. A native extension is on the v0.2 backlog if real workloads need it.
+- **American implied volatility.** The IV solver inverts the Black-Scholes European pricer even for American options. For American options with significant early-exercise premium, the solved IV will be slightly off. v0.2 may add a CRR-based IV solver (slower but exact).
+- **Non-vanilla exercise.** No Bermudan, Asian, barrier, or any other exotic exercise style.
+- **Discrete dividends.** Dividend yield is treated as a continuous constant. Discrete dividends require a different tree and are out of scope for v0.1.
+- **Day-count conventions.** Time-to-expiry uses Actual/365 Fixed. If your reference data uses Actual/360 or 30/360, expect small drifts.
+
+If any of these blocks your use case, please open an issue describing the workload — that drives v0.2 prioritization.
+```
+
+- [ ] **Step 8: Enable Pages in repo settings**
+
+GitHub Pages cannot be enabled from the local clone; it must be turned on once in the GitHub UI. Tell the user (don't attempt to do it from the CLI):
+
+> Once the repo is on GitHub: **Settings → Pages → Source: Deploy from a branch → Branch: `main` / folder: `/docs` → Save.** First build takes ~1 minute. The site URL will be `https://<OWNER>.github.io/pure_greeks/`.
+
+No GitHub Actions workflow is needed for this — Pages auto-builds when the source is `main /docs`.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add docs/
+git commit -m "docs: GitHub Pages site for usage, engines, validation, limitations"
+```
+
+- [ ] **Step 10: Verify locally (optional)**
+
+If the implementer wants to preview before pushing:
+
+```bash
+gem install bundler jekyll
+cd docs && jekyll serve
+```
+
+Otherwise, verification happens after push by visiting the Pages URL.
+
+### Task 28: Tag 0.1.0
 
 **Files:**
 - Modify: `lib/pure_greeks/version.rb`
@@ -2478,7 +2755,10 @@ Before declaring v0.1.0 ready:
 - [ ] All RSpec examples pass.
 - [ ] Rubocop passes.
 - [ ] Regression suite against `tenor_golden.json` passes (or drift report is documented and acceptable).
-- [ ] README usage examples actually run (try them in `bundle exec irb`).
+- [ ] README "Quick example" snippet runs cleanly in `bundle exec irb`.
+- [ ] All `docs/*.md` usage examples run cleanly in `bundle exec irb`.
+- [ ] README badges all resolve to real targets (CI workflow exists, license link is valid; the RubyGems badge will 404 until publish — that's expected).
+- [ ] GitHub Pages source is configured to `main` / `/docs` and the site renders at `https://<OWNER>.github.io/pure_greeks/`.
 - [ ] Benchmarks recorded in `BENCHMARKS.md`.
 - [ ] Version bumped to `0.1.0` and tagged.
 - [ ] User has explicitly approved push/publish.
