@@ -1,8 +1,50 @@
 AllCops:
   TargetRubyVersion: 3.2
+  NewCops: disable
+  SuggestExtensions: false
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes
 
 Style/StringLiteralsInInterpolation:
   EnforcedStyle: double_quotes
+
+# Math/finance code uses standard short variable names (S, K, T, r, q,
+# sigma) and formula-shaped methods. The next few rules suppress style
+# complaints that fight that domain — applied only to the math/engine
+# layers, not the public API or surrounding plumbing.
+Style/Documentation:
+  Enabled: false
+
+Naming/MethodParameterName:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+
+Metrics/ParameterLists:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+
+Metrics/AbcSize:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+
+Metrics/MethodLength:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+
+Metrics/CyclomaticComplexity:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+
+Metrics/PerceivedComplexity:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+
+Layout/LineLength:
+  Max: 130

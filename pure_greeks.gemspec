@@ -9,7 +9,11 @@ Gem::Specification.new do |spec|
   spec.email = ["jayrav13@gmail.com"]
 
   spec.summary = "Pure-Ruby options Greeks, pricing, and implied volatility for vanilla European and American options."
-  spec.description = "Pure-Ruby implementation of Black-Scholes European and CRR Binomial American option pricing with delta, gamma, theta, vega, rho, and Brent's-method implied volatility. No Python, no QuantLib system dep, no native code."
+  spec.description = <<~DESCRIPTION.tr("\n", " ").strip
+    Pure-Ruby implementation of Black-Scholes European and CRR Binomial American option pricing
+    with delta, gamma, theta, vega, rho, and Brent's-method implied volatility. No Python,
+    no QuantLib system dep, no native code.
+  DESCRIPTION
   spec.homepage = "https://github.com/jayrav13/ruby-pure-greeks"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2.0"
