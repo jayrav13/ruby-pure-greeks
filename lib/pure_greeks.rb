@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-require_relative "pure_greeks/version"
+require "pure_greeks/version"
+require "pure_greeks/errors"
+require "pure_greeks/greeks"
+require "pure_greeks/option"
 
 module PureGreeks
-  class Error < StandardError; end
-  # Your code goes here...
 end

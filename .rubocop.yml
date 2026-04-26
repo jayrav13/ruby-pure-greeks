@@ -20,31 +20,39 @@ Naming/MethodParameterName:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/option.rb"
 
+# The Option class's public constructor takes 10 named option-pricing
+# inputs and validates them — that's the contract, not a code smell.
 Metrics/ParameterLists:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/option.rb"
 
 Metrics/AbcSize:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/option.rb"
 
 Metrics/MethodLength:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/option.rb"
 
 Metrics/CyclomaticComplexity:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/option.rb"
 
 Metrics/PerceivedComplexity:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/option.rb"
 
 Layout/LineLength:
   Max: 130
