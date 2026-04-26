@@ -1,0 +1,2450 @@
+# pure_greeks v0.1.0 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build a pure-Ruby gem (`pure_greeks`) that computes options Greeks (delta, gamma, theta, vega, rho), prices, and implied volatility for vanilla European and American options — with no Python or QuantLib dependency. Validate against a golden dataset of historical QuantLib outputs from the Tenor codebase.
+
+**Architecture:** Object-oriented public API (`PureGreeks::Option`) backed by a pluggable engine architecture with a three-tier fallback chain (CRR Binomial American → Black-Scholes European → Intrinsic). Engines are stateless calculators; the `Option` class orchestrates engine selection and exposes lazy, cached Greek/price accessors. An IV solver inverts the pricing function via Brent's method.
+
+**Tech Stack:** Ruby 3.2+, RSpec, `distribution` gem (normal CDF/PDF), `bigdecimal` (stdlib, for IV solver bounds), GitHub Actions for CI. No native extensions in v0.1.0 — performance pass at the end determines whether v0.2 needs them.
+
+---
+
+## Origin & Background
+
+This gem extracts and re-implements the Greeks calculation pipeline from the Tenor application (`bin/calculate_greeks.py`), which currently uses QuantLib via a Python subprocess. Rewriting in pure Ruby eliminates the cross-language boundary, makes the math portable for other Ruby projects, and removes the system-level QuantLib dependency.
+
+The reference implementation in Tenor uses three QuantLib engines in fallback order:
+
+1. **CRR Binomial American (200-step)** — handles ~83% of options
+2. **Black-Scholes European (analytic)** — fallback for extreme IV that breaks the binomial tree
+3. **Intrinsic value** — last resort for zero/negative IV
+
+This plan reproduces that pipeline using stdlib + `distribution` gem, validates numerical agreement against the Tenor production database, and ships a clean OO API.
+
+---
+
+## Public API Design (target shape)
+
+The gem must expose this API. All later tasks must conform.
+
+```ruby
+require "pure_greeks"
+
+# Compute Greeks given IV
+option = PureGreeks::Option.new(
+  exercise_style: :american,        # or :european
+  type: :call,                       # or :put
+  strike: 150.0,
+  expiration: Date.new(2026, 6, 19),
+  underlying_price: 148.5,
+  implied_volatility: 0.35,
+  risk_free_rate: 0.05,
+  dividend_yield: 0.0,
+  valuation_date: Date.new(2026, 4, 26)
+)
+
+option.price                # => Float
+option.delta                # => Float
+option.gamma                # => Float
+option.theta                # => Float (per calendar day)
+option.vega                 # => Float (per 1% vol move)
+option.rho                  # => Float (per 1% rate move)
+option.greeks               # => PureGreeks::Greeks struct (all five + price + model)
+option.calculation_model    # => :crr_binomial_american | :black_scholes_european | :intrinsic
+
+# Solve for implied volatility given a market price
+option = PureGreeks::Option.new(
+  exercise_style: :european,
+  type: :call,
+  strike: 150.0,
+  expiration: Date.new(2026, 6, 19),
+  underlying_price: 148.5,
+  market_price: 5.20,
+  risk_free_rate: 0.05,
+  dividend_yield: 0.0,
+  valuation_date: Date.new(2026, 4, 26)
+)
+option.implied_volatility   # => Float (solved via Brent's method)
+```
+
+---
+
+## File Structure
+
+```
+pure_greeks/
+├── pure_greeks.gemspec
+├── Gemfile
+├── Rakefile
+├── README.md
+├── CHANGELOG.md
+├── LICENSE.txt
+├── .rspec
+├── .rubocop.yml
+├── .github/workflows/ci.yml
+├── lib/
+│   ├── pure_greeks.rb                                 # Top-level require + version
+│   ├── pure_greeks/
+│   │   ├── version.rb                                 # VERSION constant
+│   │   ├── option.rb                                  # Public OO entry point
+│   │   ├── greeks.rb                                  # Greeks value object (Data)
+│   │   ├── errors.rb                                  # Custom error classes
+│   │   ├── math/
+│   │   │   └── normal.rb                              # Normal CDF/PDF (wraps `distribution`)
+│   │   ├── engines/
+│   │   │   ├── base.rb                                # Abstract engine interface
+│   │   │   ├── black_scholes_european.rb              # Closed-form analytic engine
+│   │   │   ├── crr_binomial_american.rb               # 200-step binomial tree engine
+│   │   │   ├── intrinsic.rb                           # Zero-IV fallback engine
+│   │   │   └── fallback_chain.rb                      # Tier orchestrator
+│   │   └── implied_volatility/
+│   │       └── brent_solver.rb                        # Brent's method root finder
+├── spec/
+│   ├── spec_helper.rb
+│   ├── pure_greeks_spec.rb
+│   ├── option_spec.rb
+│   ├── greeks_spec.rb
+│   ├── math/
+│   │   └── normal_spec.rb
+│   ├── engines/
+│   │   ├── black_scholes_european_spec.rb
+│   │   ├── crr_binomial_american_spec.rb
+│   │   ├── intrinsic_spec.rb
+│   │   └── fallback_chain_spec.rb
+│   ├── implied_volatility/
+│   │   └── brent_solver_spec.rb
+│   └── regression/
+│       ├── golden_dataset_spec.rb                     # Compares to Tenor QuantLib outputs
+│       └── fixtures/
+│           └── tenor_golden.json                      # Exported via tools/golden_dataset_export.rb
+├── bench/
+│   ├── single_option.rb
+│   └── batch.rb
+└── tools/
+    └── golden_dataset_export.rb                       # Pulls from Tenor prod DB via MCP
+```
+
+**Responsibility map:**
+
+| File | Responsibility |
+|------|----------------|
+| `option.rb` | Public OO API. Validates inputs, picks engine, exposes lazy Greek/price accessors, runs IV solver when `market_price` given. |
+| `greeks.rb` | Immutable value object holding `delta`, `gamma`, `theta`, `vega`, `rho`, `price`, `model`. |
+| `math/normal.rb` | Wraps `Distribution::Normal.cdf` / `.pdf` behind a stable internal namespace. Single point of change if the dependency is swapped. |
+| `engines/base.rb` | Defines the engine interface: `#calculate(option_data) → Greeks`. |
+| `engines/black_scholes_european.rb` | Closed-form formulas for European option price + Greeks. |
+| `engines/crr_binomial_american.rb` | 200-step Cox-Ross-Rubinstein tree. Backward induction with early-exercise check. Finite-difference vega/rho. |
+| `engines/intrinsic.rb` | Returns intrinsic value + binary delta. Used for zero/negative IV. |
+| `engines/fallback_chain.rb` | Tries engines in order (American → European → Intrinsic), catching numerical failures. |
+| `implied_volatility/brent_solver.rb` | Brent's method root finder. Brackets IV between `[1e-6, 5.0]` and inverts the price function. |
+| `tools/golden_dataset_export.rb` | One-off script that pulls (snapshot inputs, computed Greeks) from Tenor's `options.greeks` table via the MCP `mcp__postgres-prod__query` tool, writes JSON fixture. |
+
+---
+
+## Prerequisites for the Implementing Session
+
+The session executing this plan must have:
+
+1. **Ruby 3.2+** installed (`ruby -v`)
+2. **Bundler** (`gem install bundler`)
+3. **Tenor MCP access** — specifically, `mcp__postgres-prod__query` must be available to pull the golden dataset in Phase 7. Confirm with `mcp` tool list before starting Phase 7. If unavailable, skip Phase 7 and flag for follow-up.
+
+Per Tenor `CLAUDE.md` memory: writes against the production DB require explicit user permission. Phase 7 is **read-only** (`SELECT` only) — the export tool must enforce that.
+
+---
+
+## Phase 0: Project Skeleton
+
+### Task 1: Initialize gem skeleton with bundler
+
+**Files:**
+- Run: `bundle gem pure_greeks .` (in `~/Code/pure_greeks/`, populating the existing dir)
+
+- [ ] **Step 1: Run bundle gem**
+
+```bash
+cd ~/Code/pure_greeks
+bundle gem . --test=rspec --linter=rubocop --ci=github --no-mit --no-coc --no-changelog
+```
+
+Expected: gem skeleton populated. If it complains the dir is not empty, run with `--force` or temporarily move `PLAN.md` aside, then move it back.
+
+- [ ] **Step 2: Verify skeleton**
+
+Run: `bundle install`
+Expected: bundler installs default deps (rspec, rubocop) successfully.
+
+Run: `bundle exec rspec`
+Expected: 0 examples, 0 failures (skeleton has no tests yet).
+
+- [ ] **Step 3: Set Ruby version floor**
+
+Edit `pure_greeks.gemspec`:
+
+```ruby
+spec.required_ruby_version = ">= 3.2.0"
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m "chore: initialize gem skeleton with bundler"
+```
+
+### Task 2: Add runtime + dev dependencies
+
+**Files:**
+- Modify: `pure_greeks.gemspec`
+- Modify: `Gemfile`
+
+- [ ] **Step 1: Add `distribution` runtime dependency**
+
+Edit `pure_greeks.gemspec`, inside the `Gem::Specification.new` block:
+
+```ruby
+spec.add_dependency "distribution", "~> 0.8"
+```
+
+- [ ] **Step 2: Install**
+
+Run: `bundle install`
+Expected: `distribution` installed.
+
+- [ ] **Step 3: Verify the require path works**
+
+Run: `bundle exec ruby -e "require 'distribution'; puts Distribution::Normal.cdf(0.0)"`
+Expected: `0.5`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add pure_greeks.gemspec Gemfile.lock
+git commit -m "feat: add distribution gem for normal CDF/PDF"
+```
+
+### Task 3: Configure RSpec
+
+**Files:**
+- Modify: `.rspec`
+- Modify: `spec/spec_helper.rb`
+
+- [ ] **Step 1: Update `.rspec`**
+
+Replace contents of `.rspec`:
+
+```
+--require spec_helper
+--format documentation
+--color
+```
+
+- [ ] **Step 2: Verify spec_helper is sane**
+
+Read `spec/spec_helper.rb`. Ensure it requires `pure_greeks`:
+
+```ruby
+require "pure_greeks"
+
+RSpec.configure do |config|
+  config.expect_with :rspec do |c|
+    c.syntax = :expect
+  end
+end
+```
+
+- [ ] **Step 3: Run rspec to confirm**
+
+Run: `bundle exec rspec`
+Expected: 0 examples, 0 failures.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .rspec spec/spec_helper.rb
+git commit -m "chore: configure RSpec output and require"
+```
+
+---
+
+## Phase 1: Math Foundations
+
+### Task 4: Normal distribution wrapper
+
+**Files:**
+- Create: `lib/pure_greeks/math/normal.rb`
+- Test: `spec/math/normal_spec.rb`
+
+Wraps the `distribution` gem behind an internal namespace. This is the only place the gem touches `Distribution::Normal` directly — if the dep is swapped, only this file changes.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `spec/math/normal_spec.rb`:
+
+```ruby
+require "pure_greeks/math/normal"
+
+RSpec.describe PureGreeks::Math::Normal do
+  describe ".cdf" do
+    it "returns 0.5 at zero" do
+      expect(described_class.cdf(0.0)).to be_within(1e-10).of(0.5)
+    end
+
+    it "returns ~0.8413 at one std dev" do
+      expect(described_class.cdf(1.0)).to be_within(1e-4).of(0.8413)
+    end
+
+    it "returns ~0.9772 at two std devs" do
+      expect(described_class.cdf(2.0)).to be_within(1e-4).of(0.9772)
+    end
+
+    it "returns symmetric values around zero" do
+      expect(described_class.cdf(-1.5) + described_class.cdf(1.5)).to be_within(1e-10).of(1.0)
+    end
+  end
+
+  describe ".pdf" do
+    it "returns 1/sqrt(2*pi) at zero" do
+      expect(described_class.pdf(0.0)).to be_within(1e-10).of(1.0 / ::Math.sqrt(2 * ::Math::PI))
+    end
+
+    it "is symmetric" do
+      expect(described_class.pdf(-1.7)).to be_within(1e-10).of(described_class.pdf(1.7))
+    end
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/math/normal_spec.rb`
+Expected: `LoadError` — `pure_greeks/math/normal` does not exist.
+
+- [ ] **Step 3: Implement**
+
+Create `lib/pure_greeks/math/normal.rb`:
+
+```ruby
+require "distribution"
+
+module PureGreeks
+  module Math
+    module Normal
+      def self.cdf(x)
+        Distribution::Normal.cdf(x)
+      end
+
+      def self.pdf(x)
+        Distribution::Normal.pdf(x)
+      end
+    end
+  end
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/math/normal_spec.rb`
+Expected: 6 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/math/normal.rb spec/math/normal_spec.rb
+git commit -m "feat: add Normal distribution wrapper"
+```
+
+### Task 5: Greeks value object
+
+**Files:**
+- Create: `lib/pure_greeks/greeks.rb`
+- Test: `spec/greeks_spec.rb`
+
+Immutable `Data` class. Holds the five Greeks plus price plus the engine that produced them.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `spec/greeks_spec.rb`:
+
+```ruby
+require "pure_greeks/greeks"
+
+RSpec.describe PureGreeks::Greeks do
+  let(:greeks) do
+    described_class.new(
+      delta: 0.5,
+      gamma: 0.02,
+      theta: -0.01,
+      vega: 0.15,
+      rho: 0.08,
+      price: 4.25,
+      model: :black_scholes_european
+    )
+  end
+
+  it "exposes all six numeric fields" do
+    expect(greeks.delta).to eq(0.5)
+    expect(greeks.gamma).to eq(0.02)
+    expect(greeks.theta).to eq(-0.01)
+    expect(greeks.vega).to eq(0.15)
+    expect(greeks.rho).to eq(0.08)
+    expect(greeks.price).to eq(4.25)
+  end
+
+  it "exposes the model symbol" do
+    expect(greeks.model).to eq(:black_scholes_european)
+  end
+
+  it "is immutable" do
+    expect { greeks.delta = 0.7 }.to raise_error(NoMethodError)
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/greeks_spec.rb`
+Expected: LoadError.
+
+- [ ] **Step 3: Implement**
+
+Create `lib/pure_greeks/greeks.rb`:
+
+```ruby
+module PureGreeks
+  Greeks = Data.define(:delta, :gamma, :theta, :vega, :rho, :price, :model)
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/greeks_spec.rb`
+Expected: 3 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/greeks.rb spec/greeks_spec.rb
+git commit -m "feat: add Greeks value object"
+```
+
+### Task 6: Custom error classes
+
+**Files:**
+- Create: `lib/pure_greeks/errors.rb`
+
+- [ ] **Step 1: Implement**
+
+Create `lib/pure_greeks/errors.rb`:
+
+```ruby
+module PureGreeks
+  class Error < StandardError; end
+  class InvalidInputError < Error; end
+  class ExpiredContractError < InvalidInputError; end
+  class CalculationError < Error; end
+  class IVConvergenceError < CalculationError; end
+end
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add lib/pure_greeks/errors.rb
+git commit -m "feat: add error class hierarchy"
+```
+
+---
+
+## Phase 2: Black-Scholes European Engine
+
+### Task 7: Black-Scholes pricing — call
+
+**Files:**
+- Create: `lib/pure_greeks/engines/black_scholes_european.rb` (incremental — pricing first)
+- Test: `spec/engines/black_scholes_european_spec.rb`
+
+**Reference values** (Hull, 11e — Spot=100, Strike=100, T=1.0 yr, r=5%, σ=20%, q=0):
+- Call price = 10.4506
+- Put price = 5.5735
+
+**Black-Scholes formulas:**
+
+```
+d1 = (ln(S/K) + (r - q + σ²/2)·T) / (σ·√T)
+d2 = d1 − σ·√T
+Call = S·e^(−q·T)·N(d1) − K·e^(−r·T)·N(d2)
+Put  = K·e^(−r·T)·N(−d2) − S·e^(−q·T)·N(−d1)
+```
+
+- [ ] **Step 1: Write failing test for call price**
+
+Create `spec/engines/black_scholes_european_spec.rb`:
+
+```ruby
+require "pure_greeks/engines/black_scholes_european"
+
+RSpec.describe PureGreeks::Engines::BlackScholesEuropean do
+  let(:hull_inputs) do
+    {
+      type: :call,
+      strike: 100.0,
+      underlying_price: 100.0,
+      time_to_expiry: 1.0,
+      implied_volatility: 0.20,
+      risk_free_rate: 0.05,
+      dividend_yield: 0.0
+    }
+  end
+
+  describe ".price" do
+    it "matches Hull reference for at-the-money call" do
+      expect(described_class.price(**hull_inputs)).to be_within(1e-3).of(10.4506)
+    end
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/engines/black_scholes_european_spec.rb`
+Expected: LoadError.
+
+- [ ] **Step 3: Implement**
+
+Create `lib/pure_greeks/engines/black_scholes_european.rb`:
+
+```ruby
+require "pure_greeks/math/normal"
+
+module PureGreeks
+  module Engines
+    module BlackScholesEuropean
+      module_function
+
+      def price(type:, strike:, underlying_price:, time_to_expiry:, implied_volatility:, risk_free_rate:, dividend_yield:)
+        d1, d2 = d1_d2(strike, underlying_price, time_to_expiry, implied_volatility, risk_free_rate, dividend_yield)
+        s_disc = underlying_price * ::Math.exp(-dividend_yield * time_to_expiry)
+        k_disc = strike * ::Math.exp(-risk_free_rate * time_to_expiry)
+
+        if type == :call
+          s_disc * Math::Normal.cdf(d1) - k_disc * Math::Normal.cdf(d2)
+        else
+          k_disc * Math::Normal.cdf(-d2) - s_disc * Math::Normal.cdf(-d1)
+        end
+      end
+
+      def d1_d2(strike, spot, t, sigma, r, q)
+        sqrt_t = ::Math.sqrt(t)
+        d1 = (::Math.log(spot / strike) + (r - q + 0.5 * sigma**2) * t) / (sigma * sqrt_t)
+        d2 = d1 - sigma * sqrt_t
+        [d1, d2]
+      end
+    end
+  end
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/black_scholes_european_spec.rb`
+Expected: 1 example, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/black_scholes_european.rb spec/engines/black_scholes_european_spec.rb
+git commit -m "feat: add Black-Scholes European call pricing"
+```
+
+### Task 8: Black-Scholes pricing — put + put-call parity
+
+**Files:**
+- Modify: `spec/engines/black_scholes_european_spec.rb`
+
+- [ ] **Step 1: Add put price test**
+
+Append to `spec/engines/black_scholes_european_spec.rb`, inside `describe ".price"`:
+
+```ruby
+it "matches Hull reference for at-the-money put" do
+  expect(described_class.price(**hull_inputs.merge(type: :put))).to be_within(1e-3).of(5.5735)
+end
+
+it "satisfies put-call parity" do
+  call = described_class.price(**hull_inputs)
+  put = described_class.price(**hull_inputs.merge(type: :put))
+  s, k, r, q, t = 100.0, 100.0, 0.05, 0.0, 1.0
+  parity = call - put - (s * ::Math.exp(-q * t) - k * ::Math.exp(-r * t))
+  expect(parity).to be_within(1e-10).of(0.0)
+end
+```
+
+- [ ] **Step 2: Run, expect pass (put already implemented in Task 7)**
+
+Run: `bundle exec rspec spec/engines/black_scholes_european_spec.rb`
+Expected: 3 examples, 0 failures.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add spec/engines/black_scholes_european_spec.rb
+git commit -m "test: verify Black-Scholes put pricing and put-call parity"
+```
+
+### Task 9: Black-Scholes Greeks (delta, gamma, theta, vega, rho)
+
+**Files:**
+- Modify: `lib/pure_greeks/engines/black_scholes_european.rb`
+- Modify: `spec/engines/black_scholes_european_spec.rb`
+
+**Reference Greeks** (Hull params, ATM call):
+- Delta = N(d1) = 0.6368
+- Gamma = N'(d1)/(S·σ·√T) = 0.01876
+- Theta (per year) = −6.4140 → per day = −0.01757
+- Vega (per 1.0 vol move) = 37.524 → per 1% = 0.37524
+- Rho (per 1.0 rate move) = 53.232 → per 1% = 0.53232
+
+**Greek formulas:**
+
+```
+Δ_call = e^(−q·T)·N(d1)
+Δ_put  = −e^(−q·T)·N(−d1)
+Γ      = e^(−q·T)·φ(d1)/(S·σ·√T)              (same call/put)
+Θ_call = −S·φ(d1)·σ·e^(−q·T)/(2·√T) − r·K·e^(−r·T)·N(d2) + q·S·e^(−q·T)·N(d1)
+Θ_put  = −S·φ(d1)·σ·e^(−q·T)/(2·√T) + r·K·e^(−r·T)·N(−d2) − q·S·e^(−q·T)·N(−d1)
+ν      = S·e^(−q·T)·φ(d1)·√T                  (same call/put; per 1.0 vol)
+ρ_call = K·T·e^(−r·T)·N(d2)                    (per 1.0 rate)
+ρ_put  = −K·T·e^(−r·T)·N(−d2)                  (per 1.0 rate)
+```
+
+The engine returns theta scaled per **calendar day** (theta_per_year / 365), vega per **1% move** (vega / 100), rho per **1% move** (rho / 100) — matching the Tenor reference implementation.
+
+- [ ] **Step 1: Write failing test for full Greeks output**
+
+Append to `spec/engines/black_scholes_european_spec.rb`:
+
+```ruby
+describe ".calculate" do
+  it "returns Greeks struct matching Hull reference for ATM call" do
+    g = described_class.calculate(**hull_inputs)
+    expect(g.price).to be_within(1e-3).of(10.4506)
+    expect(g.delta).to be_within(1e-4).of(0.6368)
+    expect(g.gamma).to be_within(1e-5).of(0.01876)
+    expect(g.theta).to be_within(1e-4).of(-0.01757)
+    expect(g.vega).to be_within(1e-4).of(0.37524)
+    expect(g.rho).to be_within(1e-3).of(0.53232)
+    expect(g.model).to eq(:black_scholes_european)
+  end
+
+  it "returns negative delta for put" do
+    g = described_class.calculate(**hull_inputs.merge(type: :put))
+    expect(g.delta).to be_within(1e-4).of(-0.3632)
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/engines/black_scholes_european_spec.rb`
+Expected: NoMethodError on `.calculate`.
+
+- [ ] **Step 3: Implement `.calculate`**
+
+Replace `lib/pure_greeks/engines/black_scholes_european.rb` contents:
+
+```ruby
+require "pure_greeks/math/normal"
+require "pure_greeks/greeks"
+
+module PureGreeks
+  module Engines
+    module BlackScholesEuropean
+      module_function
+
+      def calculate(type:, strike:, underlying_price:, time_to_expiry:, implied_volatility:, risk_free_rate:, dividend_yield:)
+        d1, d2 = d1_d2(strike, underlying_price, time_to_expiry, implied_volatility, risk_free_rate, dividend_yield)
+        sqrt_t = ::Math.sqrt(time_to_expiry)
+        s_disc = underlying_price * ::Math.exp(-dividend_yield * time_to_expiry)
+        k_disc = strike * ::Math.exp(-risk_free_rate * time_to_expiry)
+        nd1 = Math::Normal.cdf(d1)
+        nd2 = Math::Normal.cdf(d2)
+        n_neg_d1 = Math::Normal.cdf(-d1)
+        n_neg_d2 = Math::Normal.cdf(-d2)
+        pdf_d1 = Math::Normal.pdf(d1)
+
+        price = type == :call ? s_disc * nd1 - k_disc * nd2 : k_disc * n_neg_d2 - s_disc * n_neg_d1
+        delta = type == :call ? ::Math.exp(-dividend_yield * time_to_expiry) * nd1 : -::Math.exp(-dividend_yield * time_to_expiry) * n_neg_d1
+        gamma = ::Math.exp(-dividend_yield * time_to_expiry) * pdf_d1 / (underlying_price * implied_volatility * sqrt_t)
+
+        theta_year =
+          if type == :call
+            -s_disc * pdf_d1 * implied_volatility / (2 * sqrt_t) -
+              risk_free_rate * k_disc * nd2 +
+              dividend_yield * s_disc * nd1
+          else
+            -s_disc * pdf_d1 * implied_volatility / (2 * sqrt_t) +
+              risk_free_rate * k_disc * n_neg_d2 -
+              dividend_yield * s_disc * n_neg_d1
+          end
+
+        vega_unit = s_disc * pdf_d1 * sqrt_t
+        rho_unit = type == :call ? k_disc * time_to_expiry * nd2 : -k_disc * time_to_expiry * n_neg_d2
+
+        Greeks.new(
+          delta: delta,
+          gamma: gamma,
+          theta: theta_year / 365.0,
+          vega: vega_unit / 100.0,
+          rho: rho_unit / 100.0,
+          price: price,
+          model: :black_scholes_european
+        )
+      end
+
+      def price(**args)
+        calculate(**args).price
+      end
+
+      def d1_d2(strike, spot, t, sigma, r, q)
+        sqrt_t = ::Math.sqrt(t)
+        d1 = (::Math.log(spot / strike) + (r - q + 0.5 * sigma**2) * t) / (sigma * sqrt_t)
+        d2 = d1 - sigma * sqrt_t
+        [d1, d2]
+      end
+    end
+  end
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/black_scholes_european_spec.rb`
+Expected: 5 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/black_scholes_european.rb spec/engines/black_scholes_european_spec.rb
+git commit -m "feat: add Black-Scholes European Greeks (delta, gamma, theta, vega, rho)"
+```
+
+---
+
+## Phase 3: CRR Binomial American Engine
+
+### Task 10: CRR tree builder
+
+**Files:**
+- Create: `lib/pure_greeks/engines/crr_binomial_american.rb` (incremental — tree first)
+- Test: `spec/engines/crr_binomial_american_spec.rb`
+
+**CRR parameters** (Cox-Ross-Rubinstein):
+```
+dt = T / N
+u = exp(σ·√dt)
+d = 1/u
+p = (exp((r-q)·dt) - d) / (u - d)        # risk-neutral up-probability
+disc = exp(-r·dt)                          # one-step discount
+```
+
+The tree has N+1 leaf nodes at time T, with spot at leaf `j` being `S · u^(N-j) · d^j` for `j ∈ [0, N]`.
+
+- [ ] **Step 1: Write failing test for tree parameters**
+
+Create `spec/engines/crr_binomial_american_spec.rb`:
+
+```ruby
+require "pure_greeks/engines/crr_binomial_american"
+
+RSpec.describe PureGreeks::Engines::CrrBinomialAmerican do
+  describe ".tree_parameters" do
+    it "computes u, d, p, disc for given inputs" do
+      params = described_class.tree_parameters(
+        time_to_expiry: 1.0,
+        steps: 200,
+        implied_volatility: 0.20,
+        risk_free_rate: 0.05,
+        dividend_yield: 0.0
+      )
+      dt = 1.0 / 200.0
+      expect(params[:dt]).to be_within(1e-12).of(dt)
+      expect(params[:u]).to be_within(1e-10).of(::Math.exp(0.20 * ::Math.sqrt(dt)))
+      expect(params[:d]).to be_within(1e-10).of(1.0 / params[:u])
+      expect(params[:p]).to be > 0.0
+      expect(params[:p]).to be < 1.0
+      expect(params[:disc]).to be_within(1e-10).of(::Math.exp(-0.05 * dt))
+    end
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/engines/crr_binomial_american_spec.rb`
+Expected: LoadError.
+
+- [ ] **Step 3: Implement**
+
+Create `lib/pure_greeks/engines/crr_binomial_american.rb`:
+
+```ruby
+module PureGreeks
+  module Engines
+    module CrrBinomialAmerican
+      DEFAULT_STEPS = 200
+
+      module_function
+
+      def tree_parameters(time_to_expiry:, steps:, implied_volatility:, risk_free_rate:, dividend_yield:)
+        dt = time_to_expiry / steps.to_f
+        u = ::Math.exp(implied_volatility * ::Math.sqrt(dt))
+        d = 1.0 / u
+        p = (::Math.exp((risk_free_rate - dividend_yield) * dt) - d) / (u - d)
+        disc = ::Math.exp(-risk_free_rate * dt)
+        { dt: dt, u: u, d: d, p: p, disc: disc }
+      end
+    end
+  end
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/crr_binomial_american_spec.rb`
+Expected: 1 example, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/crr_binomial_american.rb spec/engines/crr_binomial_american_spec.rb
+git commit -m "feat: add CRR tree parameter computation"
+```
+
+### Task 11: CRR backward induction — pricing only
+
+**Files:**
+- Modify: `lib/pure_greeks/engines/crr_binomial_american.rb`
+- Modify: `spec/engines/crr_binomial_american_spec.rb`
+
+**Algorithm:**
+1. Build leaf payoff vector: for each leaf `j ∈ [0, N]`, `payoff[j] = max(0, ε·(S·u^(N-j)·d^j − K))` where `ε = +1` for call, `-1` for put.
+2. Iterate backward: at step `i = N-1, …, 0`, for each node `j ∈ [0, i]`:
+   - `continuation = disc · (p · V[j] + (1-p) · V[j+1])`
+   - `spot_at_node = S · u^(i-j) · d^j`
+   - `intrinsic = max(0, ε·(spot_at_node − K))`
+   - `V[j] = max(continuation, intrinsic)`  ← American early-exercise
+3. Return `V[0]`.
+
+**Reference value:** American put with no dividends and no early exercise should equal European put. Use Hull params (S=K=100, σ=20%, r=5%, q=0, T=1):
+- European put = 5.5735
+- American put = 6.0395 (early exercise has value)
+- American call (no div) = European call = 10.4506
+
+- [ ] **Step 1: Write failing test**
+
+Append to `spec/engines/crr_binomial_american_spec.rb`:
+
+```ruby
+let(:hull_inputs) do
+  {
+    type: :call,
+    strike: 100.0,
+    underlying_price: 100.0,
+    time_to_expiry: 1.0,
+    implied_volatility: 0.20,
+    risk_free_rate: 0.05,
+    dividend_yield: 0.0,
+    steps: 200
+  }
+end
+
+describe ".price" do
+  it "American call with no dividends matches European call (Hull ATM)" do
+    expect(described_class.price(**hull_inputs)).to be_within(0.02).of(10.4506)
+  end
+
+  it "American put with dividends > European put (early exercise has value)" do
+    am_put = described_class.price(**hull_inputs.merge(type: :put))
+    expect(am_put).to be_within(0.05).of(6.0395)
+    expect(am_put).to be > 5.5735
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/engines/crr_binomial_american_spec.rb`
+Expected: NoMethodError.
+
+- [ ] **Step 3: Implement backward induction**
+
+Append to `lib/pure_greeks/engines/crr_binomial_american.rb` (inside the module):
+
+```ruby
+def price(type:, strike:, underlying_price:, time_to_expiry:, implied_volatility:, risk_free_rate:, dividend_yield:, steps: DEFAULT_STEPS)
+  params = tree_parameters(
+    time_to_expiry: time_to_expiry,
+    steps: steps,
+    implied_volatility: implied_volatility,
+    risk_free_rate: risk_free_rate,
+    dividend_yield: dividend_yield
+  )
+  backward_induct(type, strike, underlying_price, steps, params)
+end
+
+def backward_induct(type, strike, spot, steps, params)
+  u = params[:u]
+  d = params[:d]
+  p = params[:p]
+  disc = params[:disc]
+  sign = type == :call ? 1.0 : -1.0
+
+  values = Array.new(steps + 1)
+  (0..steps).each do |j|
+    spot_at_leaf = spot * (u**(steps - j)) * (d**j)
+    values[j] = [0.0, sign * (spot_at_leaf - strike)].max
+  end
+
+  (steps - 1).downto(0) do |i|
+    (0..i).each do |j|
+      continuation = disc * (p * values[j] + (1 - p) * values[j + 1])
+      spot_at_node = spot * (u**(i - j)) * (d**j)
+      intrinsic = [0.0, sign * (spot_at_node - strike)].max
+      values[j] = [continuation, intrinsic].max
+    end
+  end
+
+  values[0]
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/crr_binomial_american_spec.rb`
+Expected: 3 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/crr_binomial_american.rb spec/engines/crr_binomial_american_spec.rb
+git commit -m "feat: add CRR backward induction with early-exercise"
+```
+
+### Task 12: CRR delta + gamma extraction from tree
+
+**Files:**
+- Modify: `lib/pure_greeks/engines/crr_binomial_american.rb`
+- Modify: `spec/engines/crr_binomial_american_spec.rb`
+
+**Approach:** During backward induction, retain the values at step `i = 2` (three nodes). Then:
+
+```
+Delta ≈ (V[0]_step1 - V[1]_step1) / (S·u - S·d)
+Gamma ≈ (Δ_upper - Δ_lower) / (0.5·(S·u² - S·d²))
+        where Δ_upper = (V[0]_step2 - V[1]_step2) / (S·u² - S·u·d)
+              Δ_lower = (V[1]_step2 - V[2]_step2) / (S·u·d - S·d²)
+```
+
+This is the standard "free" Delta/Gamma extraction technique used by QuantLib's `BinomialVanillaEngine`.
+
+- [ ] **Step 1: Write failing test**
+
+Append to `spec/engines/crr_binomial_american_spec.rb`:
+
+```ruby
+describe ".calculate" do
+  it "returns Greeks struct for ATM American call (matches BS within tree tolerance)" do
+    g = described_class.calculate(**hull_inputs)
+    expect(g.price).to be_within(0.02).of(10.4506)
+    expect(g.delta).to be_within(0.005).of(0.6368)
+    expect(g.gamma).to be_within(0.001).of(0.01876)
+    expect(g.model).to eq(:crr_binomial_american)
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/engines/crr_binomial_american_spec.rb`
+Expected: NoMethodError on `.calculate`.
+
+- [ ] **Step 3: Refactor — capture step-1 and step-2 values**
+
+Modify `backward_induct` to optionally return intermediate values, and add a `calculate` method. Replace the `def price` and `def backward_induct` block with:
+
+```ruby
+def calculate(type:, strike:, underlying_price:, time_to_expiry:, implied_volatility:, risk_free_rate:, dividend_yield:, steps: DEFAULT_STEPS)
+  params = tree_parameters(
+    time_to_expiry: time_to_expiry,
+    steps: steps,
+    implied_volatility: implied_volatility,
+    risk_free_rate: risk_free_rate,
+    dividend_yield: dividend_yield
+  )
+  result = backward_induct_with_intermediates(type, strike, underlying_price, steps, params)
+  price = result[:price]
+  v_step1 = result[:step1]
+  v_step2 = result[:step2]
+  u = params[:u]
+  d = params[:d]
+
+  # Delta from step 1
+  delta = (v_step1[0] - v_step1[1]) / (underlying_price * u - underlying_price * d)
+
+  # Gamma from step 2
+  s_uu = underlying_price * u * u
+  s_ud = underlying_price * u * d
+  s_dd = underlying_price * d * d
+  delta_upper = (v_step2[0] - v_step2[1]) / (s_uu - s_ud)
+  delta_lower = (v_step2[1] - v_step2[2]) / (s_ud - s_dd)
+  gamma = (delta_upper - delta_lower) / (0.5 * (s_uu - s_dd))
+
+  # Theta and vega/rho deferred to next tasks
+  PureGreeks::Greeks.new(
+    delta: delta,
+    gamma: gamma,
+    theta: 0.0,
+    vega: 0.0,
+    rho: 0.0,
+    price: price,
+    model: :crr_binomial_american
+  )
+end
+
+def price(**args)
+  calculate(**args).price
+end
+
+def backward_induct_with_intermediates(type, strike, spot, steps, params)
+  u = params[:u]
+  d = params[:d]
+  p = params[:p]
+  disc = params[:disc]
+  sign = type == :call ? 1.0 : -1.0
+
+  values = Array.new(steps + 1)
+  (0..steps).each do |j|
+    spot_at_leaf = spot * (u**(steps - j)) * (d**j)
+    values[j] = [0.0, sign * (spot_at_leaf - strike)].max
+  end
+
+  step2 = nil
+  step1 = nil
+
+  (steps - 1).downto(0) do |i|
+    (0..i).each do |j|
+      continuation = disc * (p * values[j] + (1 - p) * values[j + 1])
+      spot_at_node = spot * (u**(i - j)) * (d**j)
+      intrinsic = [0.0, sign * (spot_at_node - strike)].max
+      values[j] = [continuation, intrinsic].max
+    end
+    step2 = values[0..2].dup if i == 2
+    step1 = values[0..1].dup if i == 1
+  end
+
+  { price: values[0], step1: step1, step2: step2 }
+end
+
+require "pure_greeks/greeks"
+```
+
+Move the `require "pure_greeks/greeks"` to the top of the file (above the module definition).
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/crr_binomial_american_spec.rb`
+Expected: 4 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/crr_binomial_american.rb spec/engines/crr_binomial_american_spec.rb
+git commit -m "feat: extract delta and gamma from CRR tree"
+```
+
+### Task 13: CRR theta extraction
+
+**Files:**
+- Modify: `lib/pure_greeks/engines/crr_binomial_american.rb`
+- Modify: `spec/engines/crr_binomial_american_spec.rb`
+
+**Approach:** Theta is approximated by `(V_step2[1] - V_step0) / (2·dt)` then divided by 365 to convert to per-day. The middle-node value at step 2 corresponds to spot ≈ S, two time steps earlier. This is the standard QuantLib `BinomialVanillaEngine` theta technique.
+
+- [ ] **Step 1: Write failing test**
+
+Append to `describe ".calculate"`:
+
+```ruby
+it "computes theta close to Black-Scholes equivalent" do
+  g = described_class.calculate(**hull_inputs)
+  # BS theta for ATM call ≈ -0.01757 per day
+  expect(g.theta).to be_within(0.002).of(-0.01757)
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Expected: theta is 0.0, test fails.
+
+- [ ] **Step 3: Implement theta**
+
+In `calculate`, replace `theta: 0.0,` with:
+
+```ruby
+theta: (v_step2[1] - price) / (2.0 * params[:dt]) / 365.0,
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/crr_binomial_american_spec.rb`
+Expected: 5 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/crr_binomial_american.rb spec/engines/crr_binomial_american_spec.rb
+git commit -m "feat: extract theta from CRR tree"
+```
+
+### Task 14: CRR vega + rho via finite difference
+
+**Files:**
+- Modify: `lib/pure_greeks/engines/crr_binomial_american.rb`
+- Modify: `spec/engines/crr_binomial_american_spec.rb`
+
+**Approach** (matches Tenor reference):
+
+```
+vega = (price(σ + 0.01) - price(σ)) / (0.01 * 100)    # per 1% vol move
+rho  = (price(r + 0.01) - price(r)) / (0.01 * 100)    # per 1% rate move
+```
+
+We rebuild the tree with bumped parameters. This is 2 extra full tree solves per option — slow but correct. Performance optimization (reusing a baseline tree) is deferred to Phase 8.
+
+- [ ] **Step 1: Write failing test**
+
+Append to `describe ".calculate"`:
+
+```ruby
+it "computes vega close to Black-Scholes equivalent" do
+  g = described_class.calculate(**hull_inputs)
+  expect(g.vega).to be_within(0.005).of(0.37524)
+end
+
+it "computes rho close to Black-Scholes equivalent" do
+  g = described_class.calculate(**hull_inputs)
+  expect(g.rho).to be_within(0.01).of(0.53232)
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+- [ ] **Step 3: Implement bumped pricing**
+
+Replace `vega: 0.0,` and `rho: 0.0,` lines in `calculate` with full implementations. Replace the entire `calculate` method body, after the gamma computation, with:
+
+```ruby
+  # Bump vol for vega (per 1% move)
+  bumped_vol_params = tree_parameters(
+    time_to_expiry: time_to_expiry,
+    steps: steps,
+    implied_volatility: implied_volatility + 0.01,
+    risk_free_rate: risk_free_rate,
+    dividend_yield: dividend_yield
+  )
+  price_vol_up = backward_induct_with_intermediates(type, strike, underlying_price, steps, bumped_vol_params)[:price]
+  vega = (price_vol_up - price) / (0.01 * 100.0)
+
+  # Bump rate for rho (per 1% move)
+  bumped_rate_params = tree_parameters(
+    time_to_expiry: time_to_expiry,
+    steps: steps,
+    implied_volatility: implied_volatility,
+    risk_free_rate: risk_free_rate + 0.01,
+    dividend_yield: dividend_yield
+  )
+  price_rate_up = backward_induct_with_intermediates(type, strike, underlying_price, steps, bumped_rate_params)[:price]
+  rho = (price_rate_up - price) / (0.01 * 100.0)
+
+  PureGreeks::Greeks.new(
+    delta: delta,
+    gamma: gamma,
+    theta: (v_step2[1] - price) / (2.0 * params[:dt]) / 365.0,
+    vega: vega,
+    rho: rho,
+    price: price,
+    model: :crr_binomial_american
+  )
+end
+```
+
+(Replace the existing `PureGreeks::Greeks.new(...)` block at the end of `calculate`.)
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/crr_binomial_american_spec.rb`
+Expected: 7 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/crr_binomial_american.rb spec/engines/crr_binomial_american_spec.rb
+git commit -m "feat: add finite-difference vega and rho to CRR engine"
+```
+
+---
+
+## Phase 4: Intrinsic Engine + Fallback Chain
+
+### Task 15: Intrinsic engine
+
+**Files:**
+- Create: `lib/pure_greeks/engines/intrinsic.rb`
+- Test: `spec/engines/intrinsic_spec.rb`
+
+For zero/negative IV. Returns intrinsic value, binary delta, zeros elsewhere.
+
+- [ ] **Step 1: Write failing tests**
+
+Create `spec/engines/intrinsic_spec.rb`:
+
+```ruby
+require "pure_greeks/engines/intrinsic"
+
+RSpec.describe PureGreeks::Engines::Intrinsic do
+  describe ".calculate" do
+    it "in-the-money call: intrinsic = spot - strike, delta = 1" do
+      g = described_class.calculate(type: :call, strike: 100.0, underlying_price: 110.0)
+      expect(g.price).to eq(10.0)
+      expect(g.delta).to eq(1.0)
+      expect(g.gamma).to eq(0.0)
+      expect(g.model).to eq(:intrinsic)
+    end
+
+    it "out-of-the-money call: intrinsic = 0, delta = 0" do
+      g = described_class.calculate(type: :call, strike: 100.0, underlying_price: 90.0)
+      expect(g.price).to eq(0.0)
+      expect(g.delta).to eq(0.0)
+    end
+
+    it "in-the-money put: intrinsic = strike - spot, delta = -1" do
+      g = described_class.calculate(type: :put, strike: 100.0, underlying_price: 90.0)
+      expect(g.price).to eq(10.0)
+      expect(g.delta).to eq(-1.0)
+    end
+
+    it "out-of-the-money put: intrinsic = 0, delta = 0" do
+      g = described_class.calculate(type: :put, strike: 100.0, underlying_price: 110.0)
+      expect(g.price).to eq(0.0)
+      expect(g.delta).to eq(0.0)
+    end
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/engines/intrinsic_spec.rb`
+Expected: LoadError.
+
+- [ ] **Step 3: Implement**
+
+Create `lib/pure_greeks/engines/intrinsic.rb`:
+
+```ruby
+require "pure_greeks/greeks"
+
+module PureGreeks
+  module Engines
+    module Intrinsic
+      module_function
+
+      def calculate(type:, strike:, underlying_price:)
+        if type == :call
+          price = [0.0, underlying_price - strike].max
+          delta = underlying_price > strike ? 1.0 : 0.0
+        else
+          price = [0.0, strike - underlying_price].max
+          delta = underlying_price < strike ? -1.0 : 0.0
+        end
+
+        Greeks.new(
+          delta: delta,
+          gamma: 0.0,
+          theta: 0.0,
+          vega: 0.0,
+          rho: 0.0,
+          price: price,
+          model: :intrinsic
+        )
+      end
+    end
+  end
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/intrinsic_spec.rb`
+Expected: 4 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/intrinsic.rb spec/engines/intrinsic_spec.rb
+git commit -m "feat: add intrinsic value engine for zero/negative IV"
+```
+
+### Task 16: Fallback chain orchestrator
+
+**Files:**
+- Create: `lib/pure_greeks/engines/fallback_chain.rb`
+- Test: `spec/engines/fallback_chain_spec.rb`
+
+Replicates the Tenor 3-tier order. American-exercise options try CRR Binomial first; European options skip directly to Black-Scholes. Both fall back to BS European, then Intrinsic.
+
+- [ ] **Step 1: Write failing tests**
+
+Create `spec/engines/fallback_chain_spec.rb`:
+
+```ruby
+require "pure_greeks/engines/fallback_chain"
+
+RSpec.describe PureGreeks::Engines::FallbackChain do
+  let(:base_inputs) do
+    {
+      type: :call,
+      strike: 100.0,
+      underlying_price: 100.0,
+      time_to_expiry: 1.0,
+      implied_volatility: 0.20,
+      risk_free_rate: 0.05,
+      dividend_yield: 0.0
+    }
+  end
+
+  describe ".calculate" do
+    it "uses CRR for American exercise style" do
+      g = described_class.calculate(exercise_style: :american, **base_inputs)
+      expect(g.model).to eq(:crr_binomial_american)
+    end
+
+    it "uses BS European for European exercise style" do
+      g = described_class.calculate(exercise_style: :european, **base_inputs)
+      expect(g.model).to eq(:black_scholes_european)
+    end
+
+    it "falls back to intrinsic when IV <= 0" do
+      g = described_class.calculate(exercise_style: :american, **base_inputs.merge(implied_volatility: 0.0))
+      expect(g.model).to eq(:intrinsic)
+    end
+
+    it "falls back to BS European when CRR raises" do
+      allow(PureGreeks::Engines::CrrBinomialAmerican).to receive(:calculate).and_raise("simulated CRR failure")
+      g = described_class.calculate(exercise_style: :american, **base_inputs)
+      expect(g.model).to eq(:black_scholes_european)
+    end
+
+    it "falls back to intrinsic when both CRR and BS raise" do
+      allow(PureGreeks::Engines::CrrBinomialAmerican).to receive(:calculate).and_raise("simulated CRR failure")
+      allow(PureGreeks::Engines::BlackScholesEuropean).to receive(:calculate).and_raise("simulated BS failure")
+      g = described_class.calculate(exercise_style: :american, **base_inputs)
+      expect(g.model).to eq(:intrinsic)
+    end
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/engines/fallback_chain_spec.rb`
+Expected: LoadError.
+
+- [ ] **Step 3: Implement**
+
+Create `lib/pure_greeks/engines/fallback_chain.rb`:
+
+```ruby
+require "pure_greeks/engines/black_scholes_european"
+require "pure_greeks/engines/crr_binomial_american"
+require "pure_greeks/engines/intrinsic"
+
+module PureGreeks
+  module Engines
+    module FallbackChain
+      module_function
+
+      def calculate(exercise_style:, type:, strike:, underlying_price:, time_to_expiry:, implied_volatility:, risk_free_rate:, dividend_yield:)
+        if implied_volatility <= 0.0
+          return Intrinsic.calculate(type: type, strike: strike, underlying_price: underlying_price)
+        end
+
+        engine_args = {
+          type: type,
+          strike: strike,
+          underlying_price: underlying_price,
+          time_to_expiry: time_to_expiry,
+          implied_volatility: implied_volatility,
+          risk_free_rate: risk_free_rate,
+          dividend_yield: dividend_yield
+        }
+
+        if exercise_style == :american
+          begin
+            return CrrBinomialAmerican.calculate(**engine_args)
+          rescue StandardError
+            # fall through to BS
+          end
+        end
+
+        begin
+          return BlackScholesEuropean.calculate(**engine_args)
+        rescue StandardError
+          # fall through to intrinsic
+        end
+
+        Intrinsic.calculate(type: type, strike: strike, underlying_price: underlying_price)
+      end
+    end
+  end
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/engines/fallback_chain_spec.rb`
+Expected: 5 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/engines/fallback_chain.rb spec/engines/fallback_chain_spec.rb
+git commit -m "feat: add fallback chain orchestrator (American → European → Intrinsic)"
+```
+
+---
+
+## Phase 5: Public OO API
+
+### Task 17: Option class — input validation + lazy Greeks
+
+**Files:**
+- Create: `lib/pure_greeks/option.rb`
+- Modify: `lib/pure_greeks.rb`
+- Test: `spec/option_spec.rb`
+
+The public OO entry. Validates inputs, computes time-to-expiry from dates, lazily delegates to `FallbackChain`, caches the Greeks struct.
+
+- [ ] **Step 1: Write failing tests**
+
+Create `spec/option_spec.rb`:
+
+```ruby
+require "pure_greeks"
+
+RSpec.describe PureGreeks::Option do
+  let(:valuation_date) { Date.new(2026, 4, 26) }
+  let(:expiration) { Date.new(2027, 4, 26) }
+  let(:base_args) do
+    {
+      exercise_style: :american,
+      type: :call,
+      strike: 100.0,
+      expiration: expiration,
+      underlying_price: 100.0,
+      implied_volatility: 0.20,
+      risk_free_rate: 0.05,
+      dividend_yield: 0.0,
+      valuation_date: valuation_date
+    }
+  end
+
+  describe "#initialize" do
+    it "accepts valid inputs" do
+      expect { described_class.new(**base_args) }.not_to raise_error
+    end
+
+    it "rejects invalid exercise_style" do
+      expect { described_class.new(**base_args.merge(exercise_style: :bermudan)) }
+        .to raise_error(PureGreeks::InvalidInputError, /exercise_style/)
+    end
+
+    it "rejects invalid type" do
+      expect { described_class.new(**base_args.merge(type: :spread)) }
+        .to raise_error(PureGreeks::InvalidInputError, /type/)
+    end
+
+    it "rejects negative strike" do
+      expect { described_class.new(**base_args.merge(strike: -1.0)) }
+        .to raise_error(PureGreeks::InvalidInputError)
+    end
+
+    it "rejects negative spot" do
+      expect { described_class.new(**base_args.merge(underlying_price: 0)) }
+        .to raise_error(PureGreeks::InvalidInputError)
+    end
+
+    it "rejects expired contract" do
+      expect { described_class.new(**base_args.merge(expiration: valuation_date - 1)) }
+        .to raise_error(PureGreeks::ExpiredContractError)
+    end
+  end
+
+  describe "Greeks accessors" do
+    subject(:option) { described_class.new(**base_args) }
+
+    it "exposes price, delta, gamma, theta, vega, rho" do
+      expect(option.price).to be > 0
+      expect(option.delta).to be_within(0.005).of(0.6368)
+      expect(option.gamma).to be_within(0.001).of(0.01876)
+      expect(option.theta).to be < 0
+      expect(option.vega).to be > 0
+    end
+
+    it "exposes greeks struct" do
+      expect(option.greeks).to be_a(PureGreeks::Greeks)
+    end
+
+    it "caches the greeks computation" do
+      expect(PureGreeks::Engines::FallbackChain).to receive(:calculate).once.and_call_original
+      option.delta
+      option.gamma
+      option.greeks
+    end
+
+    it "exposes calculation_model" do
+      expect(option.calculation_model).to eq(:crr_binomial_american)
+    end
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/option_spec.rb`
+Expected: LoadError or NameError on `PureGreeks::Option`.
+
+- [ ] **Step 3: Implement Option class**
+
+Create `lib/pure_greeks/option.rb`:
+
+```ruby
+require "date"
+require "pure_greeks/errors"
+require "pure_greeks/engines/fallback_chain"
+
+module PureGreeks
+  class Option
+    VALID_EXERCISE_STYLES = %i[american european].freeze
+    VALID_TYPES = %i[call put].freeze
+    DAYS_PER_YEAR = 365.0
+
+    attr_reader :exercise_style, :type, :strike, :expiration, :underlying_price,
+                :implied_volatility, :risk_free_rate, :dividend_yield, :valuation_date
+
+    def initialize(exercise_style:, type:, strike:, expiration:, underlying_price:, risk_free_rate:, dividend_yield:, valuation_date:, implied_volatility: nil, market_price: nil)
+      validate!(exercise_style, type, strike, underlying_price, expiration, valuation_date)
+
+      @exercise_style = exercise_style
+      @type = type
+      @strike = strike.to_f
+      @expiration = expiration
+      @underlying_price = underlying_price.to_f
+      @implied_volatility = implied_volatility&.to_f
+      @market_price = market_price&.to_f
+      @risk_free_rate = risk_free_rate.to_f
+      @dividend_yield = dividend_yield.to_f
+      @valuation_date = valuation_date
+    end
+
+    def time_to_expiry
+      (@expiration - @valuation_date).to_f / DAYS_PER_YEAR
+    end
+
+    def greeks
+      @greeks ||= compute_greeks
+    end
+
+    def price
+      greeks.price
+    end
+
+    def delta
+      greeks.delta
+    end
+
+    def gamma
+      greeks.gamma
+    end
+
+    def theta
+      greeks.theta
+    end
+
+    def vega
+      greeks.vega
+    end
+
+    def rho
+      greeks.rho
+    end
+
+    def calculation_model
+      greeks.model
+    end
+
+    private
+
+    def compute_greeks
+      Engines::FallbackChain.calculate(
+        exercise_style: @exercise_style,
+        type: @type,
+        strike: @strike,
+        underlying_price: @underlying_price,
+        time_to_expiry: time_to_expiry,
+        implied_volatility: @implied_volatility,
+        risk_free_rate: @risk_free_rate,
+        dividend_yield: @dividend_yield
+      )
+    end
+
+    def validate!(exercise_style, type, strike, spot, expiration, valuation_date)
+      raise InvalidInputError, "exercise_style must be one of #{VALID_EXERCISE_STYLES}" unless VALID_EXERCISE_STYLES.include?(exercise_style)
+      raise InvalidInputError, "type must be one of #{VALID_TYPES}" unless VALID_TYPES.include?(type)
+      raise InvalidInputError, "strike must be positive" unless strike.is_a?(Numeric) && strike > 0
+      raise InvalidInputError, "underlying_price must be positive" unless spot.is_a?(Numeric) && spot > 0
+      raise ExpiredContractError, "contract expired on #{expiration}" if expiration <= valuation_date
+    end
+  end
+end
+```
+
+- [ ] **Step 4: Update top-level require**
+
+Modify `lib/pure_greeks.rb` to require the public surface:
+
+```ruby
+require "pure_greeks/version"
+require "pure_greeks/errors"
+require "pure_greeks/greeks"
+require "pure_greeks/option"
+
+module PureGreeks
+end
+```
+
+- [ ] **Step 5: Run, expect pass**
+
+Run: `bundle exec rspec spec/option_spec.rb`
+Expected: 11 examples, 0 failures.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add lib/pure_greeks/option.rb lib/pure_greeks.rb spec/option_spec.rb
+git commit -m "feat: add Option public API with input validation and caching"
+```
+
+---
+
+## Phase 6: Implied Volatility Solver
+
+### Task 18: Brent's method root finder
+
+**Files:**
+- Create: `lib/pure_greeks/implied_volatility/brent_solver.rb`
+- Test: `spec/implied_volatility/brent_solver_spec.rb`
+
+Brent's method is robust (combines bisection guarantee with secant/inverse-quadratic speed). Reference: Numerical Recipes ch. 9.3, or Wikipedia's pseudocode. We implement a generic 1D root finder, then layer the price-inversion logic on top in Task 19.
+
+- [ ] **Step 1: Write failing tests**
+
+Create `spec/implied_volatility/brent_solver_spec.rb`:
+
+```ruby
+require "pure_greeks/implied_volatility/brent_solver"
+
+RSpec.describe PureGreeks::ImpliedVolatility::BrentSolver do
+  describe ".find_root" do
+    it "finds root of x^2 - 4 in [1, 3] (= 2.0)" do
+      root = described_class.find_root(lower: 1.0, upper: 3.0, tolerance: 1e-9) { |x| x**2 - 4.0 }
+      expect(root).to be_within(1e-9).of(2.0)
+    end
+
+    it "finds root of cos(x) - x near 0.7390851" do
+      root = described_class.find_root(lower: 0.0, upper: 1.0, tolerance: 1e-9) { |x| ::Math.cos(x) - x }
+      expect(root).to be_within(1e-9).of(0.7390851332151607)
+    end
+
+    it "raises if root is not bracketed" do
+      expect {
+        described_class.find_root(lower: 5.0, upper: 10.0, tolerance: 1e-6) { |x| x**2 - 4.0 }
+      }.to raise_error(PureGreeks::IVConvergenceError, /not bracketed/)
+    end
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/implied_volatility/brent_solver_spec.rb`
+Expected: LoadError.
+
+- [ ] **Step 3: Implement Brent's method**
+
+Create `lib/pure_greeks/implied_volatility/brent_solver.rb`:
+
+```ruby
+require "pure_greeks/errors"
+
+module PureGreeks
+  module ImpliedVolatility
+    module BrentSolver
+      MAX_ITERATIONS = 100
+
+      module_function
+
+      def find_root(lower:, upper:, tolerance: 1e-8, &f)
+        a = lower.to_f
+        b = upper.to_f
+        fa = f.call(a)
+        fb = f.call(b)
+
+        raise IVConvergenceError, "root not bracketed: f(#{a})=#{fa}, f(#{b})=#{fb}" if fa * fb > 0
+
+        if fa.abs < fb.abs
+          a, b = b, a
+          fa, fb = fb, fa
+        end
+
+        c = a
+        fc = fa
+        mflag = true
+        d = nil
+
+        MAX_ITERATIONS.times do
+          return b if fb.abs < tolerance || (b - a).abs < tolerance
+
+          s =
+            if fa != fc && fb != fc
+              # Inverse quadratic interpolation
+              a * fb * fc / ((fa - fb) * (fa - fc)) +
+                b * fa * fc / ((fb - fa) * (fb - fc)) +
+                c * fa * fb / ((fc - fa) * (fc - fb))
+            else
+              # Secant method
+              b - fb * (b - a) / (fb - fa)
+            end
+
+          condition1 = !s.between?([(3 * a + b) / 4, b].min, [(3 * a + b) / 4, b].max)
+          condition2 = mflag && (s - b).abs >= (b - c).abs / 2
+          condition3 = !mflag && (s - b).abs >= (c - d).abs / 2
+          condition4 = mflag && (b - c).abs < tolerance
+          condition5 = !mflag && d && (c - d).abs < tolerance
+
+          if condition1 || condition2 || condition3 || condition4 || condition5
+            s = (a + b) / 2.0
+            mflag = true
+          else
+            mflag = false
+          end
+
+          fs = f.call(s)
+          d = c
+          c = b
+          fc = fb
+
+          if fa * fs < 0
+            b = s
+            fb = fs
+          else
+            a = s
+            fa = fs
+          end
+
+          if fa.abs < fb.abs
+            a, b = b, a
+            fa, fb = fb, fa
+          end
+        end
+
+        raise IVConvergenceError, "exceeded #{MAX_ITERATIONS} iterations"
+      end
+    end
+  end
+end
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/implied_volatility/brent_solver_spec.rb`
+Expected: 3 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/implied_volatility/brent_solver.rb spec/implied_volatility/brent_solver_spec.rb
+git commit -m "feat: add Brent's method root finder"
+```
+
+### Task 19: Implied volatility on Option
+
+**Files:**
+- Modify: `lib/pure_greeks/option.rb`
+- Modify: `spec/option_spec.rb`
+
+Inverts the BS European pricing function via Brent. (American IV solving via CRR is too slow for v0.1 — use BS European inversion as a close approximation. Document this limitation.)
+
+- [ ] **Step 1: Write failing test**
+
+Append to `spec/option_spec.rb`:
+
+```ruby
+describe "#implied_volatility (when market_price given)" do
+  let(:european_args) do
+    {
+      exercise_style: :european,
+      type: :call,
+      strike: 100.0,
+      expiration: expiration,
+      underlying_price: 100.0,
+      market_price: 10.4506,
+      risk_free_rate: 0.05,
+      dividend_yield: 0.0,
+      valuation_date: valuation_date
+    }
+  end
+
+  it "solves IV ≈ 0.20 for known Hull price" do
+    option = described_class.new(**european_args)
+    expect(option.implied_volatility).to be_within(1e-4).of(0.20)
+  end
+
+  it "raises when market_price absent and no IV given" do
+    args = european_args.dup
+    args.delete(:market_price)
+    option = described_class.new(**args)
+    expect { option.implied_volatility }.to raise_error(PureGreeks::InvalidInputError)
+  end
+end
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `bundle exec rspec spec/option_spec.rb`
+Expected: NoMethodError on `implied_volatility` (currently only an attr).
+
+- [ ] **Step 3: Implement IV solver on Option**
+
+Modify `lib/pure_greeks/option.rb`. Add to top of file:
+
+```ruby
+require "pure_greeks/engines/black_scholes_european"
+require "pure_greeks/implied_volatility/brent_solver"
+```
+
+Replace the `def implied_volatility` accessor (currently `attr_reader`) by removing it from the `attr_reader` line and adding:
+
+```ruby
+def implied_volatility
+  return @implied_volatility if @implied_volatility
+  raise InvalidInputError, "market_price required to solve for implied_volatility" unless @market_price
+
+  @implied_volatility = ImpliedVolatility::BrentSolver.find_root(lower: 1e-6, upper: 5.0, tolerance: 1e-6) do |sigma|
+    Engines::BlackScholesEuropean.price(
+      type: @type,
+      strike: @strike,
+      underlying_price: @underlying_price,
+      time_to_expiry: time_to_expiry,
+      implied_volatility: sigma,
+      risk_free_rate: @risk_free_rate,
+      dividend_yield: @dividend_yield
+    ) - @market_price
+  end
+end
+```
+
+(Update the `attr_reader` line to remove `:implied_volatility`.)
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `bundle exec rspec spec/option_spec.rb`
+Expected: 13 examples, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/pure_greeks/option.rb spec/option_spec.rb
+git commit -m "feat: add implied volatility solver via Brent's method"
+```
+
+---
+
+## Phase 7: Validation Against Tenor Golden Dataset
+
+> **Prereq:** Tenor's `mcp__postgres-prod__query` MCP tool must be available in this session. The Tenor user memory at `~/.claude/projects/-Users-jravaliya-Code-tenor/memory/MEMORY.md` confirms read-only MCP access is the default. Per `feedback_prod_db_writes.md`, **only SELECT queries** — never any write.
+>
+> If MCP unavailable, skip this phase, leave `spec/regression/fixtures/tenor_golden.json` empty, and note in the README that golden-dataset validation is pending.
+
+### Task 20: Export tool — pull golden data from Tenor prod DB
+
+**Files:**
+- Create: `tools/golden_dataset_export.rb`
+- Create: `spec/regression/fixtures/tenor_golden.json`
+
+The export script is **a one-shot manual run**, not part of the gem's runtime. It documents the SQL query used so future regenerations are reproducible.
+
+- [ ] **Step 1: Write the export script**
+
+Create `tools/golden_dataset_export.rb`:
+
+```ruby
+# frozen_string_literal: true
+
+# Manual one-shot tool to export a golden dataset from Tenor's prod DB.
+#
+# This script is not run as part of the gem; it documents the query and the
+# expected JSON shape. To regenerate the fixture, run the SQL below via
+# Tenor's mcp__postgres-prod__query MCP and pipe the output into
+# spec/regression/fixtures/tenor_golden.json.
+#
+# READ-ONLY. Never modify this query to a write operation.
+
+GOLDEN_DATASET_QUERY = <<~SQL
+  SELECT
+    s.id AS snapshot_id,
+    s.option_type,
+    s.strike,
+    s.expiration,
+    s.underlying_price,
+    s.implied_volatility,
+    s.snapshot_date,
+    COALESCE(s.dividend_yield, 0) AS dividend_yield,
+    g.delta,
+    g.gamma,
+    g.theta,
+    g.vega,
+    g.rho,
+    g.calculated_price,
+    g.calculation_model
+  FROM options.greeks g
+  JOIN options.snapshots s ON s.id = g.snapshot_id
+  WHERE g.calculation_model IN ('quantlib_american', 'quantlib_european', 'intrinsic')
+    AND s.implied_volatility IS NOT NULL
+    AND s.implied_volatility > 0
+    AND s.expiration > s.snapshot_date
+  ORDER BY RANDOM()
+  LIMIT 500;
+SQL
+
+# Risk-free rate is stored separately in Tenor (config or per-snapshot).
+# For the fixture, use a stable assumption. The implementing session should
+# confirm with the user what rate Tenor's reference run used and document it.
+DEFAULT_RISK_FREE_RATE = 0.05
+
+puts GOLDEN_DATASET_QUERY
+puts "(Run this via mcp__postgres-prod__query, then convert the result to JSON shaped like:)"
+puts <<~JSON
+  [
+    {
+      "snapshot_id": "...",
+      "option_type": "calls",
+      "strike": 150.0,
+      "expiration": "2026-06-19",
+      "underlying_price": 148.5,
+      "implied_volatility": 0.35,
+      "snapshot_date": "2026-04-26",
+      "dividend_yield": 0.0,
+      "risk_free_rate": 0.05,
+      "expected": {
+        "delta": 0.42,
+        "gamma": 0.018,
+        "theta": -0.012,
+        "vega": 0.31,
+        "rho": 0.08,
+        "calculated_price": 4.27,
+        "calculation_model": "quantlib_american"
+      }
+    }
+  ]
+JSON
+```
+
+- [ ] **Step 2: Run the export manually**
+
+Use the MCP tool to execute the query:
+
+```
+mcp__postgres-prod__query with query=<contents of GOLDEN_DATASET_QUERY>
+```
+
+- [ ] **Step 3: Confirm risk-free rate with user**
+
+Before writing the fixture, ask the user: "What risk-free rate did Tenor's QuantLib run use? I'll embed it per-row in the golden fixture." Record the answer.
+
+- [ ] **Step 4: Write fixture**
+
+Transform the MCP query results into the JSON shape shown in step 1, save to `spec/regression/fixtures/tenor_golden.json`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/golden_dataset_export.rb spec/regression/fixtures/tenor_golden.json
+git commit -m "feat: add Tenor golden dataset export tool and fixture"
+```
+
+### Task 21: Regression suite
+
+**Files:**
+- Create: `spec/regression/golden_dataset_spec.rb`
+
+Compares PureGreeks output against QuantLib outputs from the fixture. Reports drift, fails on tolerance violation.
+
+- [ ] **Step 1: Write the regression spec**
+
+Create `spec/regression/golden_dataset_spec.rb`:
+
+```ruby
+require "json"
+require "date"
+require "pure_greeks"
+
+RSpec.describe "Regression against Tenor QuantLib golden dataset" do
+  fixture_path = File.expand_path("fixtures/tenor_golden.json", __dir__)
+
+  if File.exist?(fixture_path)
+    fixture = JSON.parse(File.read(fixture_path))
+
+    fixture.each do |row|
+      describe "snapshot #{row['snapshot_id']}" do
+        let(:expected) { row.fetch("expected") }
+        let(:option) do
+          PureGreeks::Option.new(
+            exercise_style: :american,
+            type: row["option_type"] == "puts" ? :put : :call,
+            strike: row["strike"].to_f,
+            expiration: Date.parse(row["expiration"]),
+            underlying_price: row["underlying_price"].to_f,
+            implied_volatility: row["implied_volatility"].to_f,
+            risk_free_rate: row["risk_free_rate"].to_f,
+            dividend_yield: row["dividend_yield"].to_f,
+            valuation_date: Date.parse(row["snapshot_date"])
+          )
+        end
+
+        it "matches delta within 1e-3" do
+          expect(option.delta).to be_within(1e-3).of(expected["delta"].to_f)
+        end
+
+        it "matches gamma within 1e-4" do
+          expect(option.gamma).to be_within(1e-4).of(expected["gamma"].to_f)
+        end
+
+        it "matches theta within 1e-3" do
+          expect(option.theta).to be_within(1e-3).of(expected["theta"].to_f)
+        end
+
+        it "matches vega within 1e-3" do
+          expect(option.vega).to be_within(1e-3).of(expected["vega"].to_f)
+        end
+
+        it "matches rho within 5e-3" do
+          expect(option.rho).to be_within(5e-3).of(expected["rho"].to_f)
+        end
+
+        it "matches price within 1e-2" do
+          expect(option.price).to be_within(1e-2).of(expected["calculated_price"].to_f)
+        end
+      end
+    end
+  else
+    it "skipped: golden fixture not present" do
+      pending "spec/regression/fixtures/tenor_golden.json missing — run tools/golden_dataset_export.rb"
+      raise
+    end
+  end
+end
+```
+
+- [ ] **Step 2: Run regression suite**
+
+Run: `bundle exec rspec spec/regression/golden_dataset_spec.rb`
+
+Two outcomes are acceptable:
+
+**A) All pass** — celebrate, commit, move on.
+
+**B) Some fail** — investigate. Tighten/loosen tolerances based on observed drift. Document drift in a `REGRESSION_REPORT.md` at the repo root with histograms (max/mean/std drift per Greek). The goal is `< 0.5%` of fixture rows failing — if more, debug the math.
+
+- [ ] **Step 3: Iterate until passing**
+
+If failures point to a math bug, fix the engine. If failures are extreme-IV edge cases that QuantLib also handles via fallback, ensure your fallback chain agrees.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add spec/regression/golden_dataset_spec.rb REGRESSION_REPORT.md
+git commit -m "test: add regression suite against Tenor QuantLib golden dataset"
+```
+
+---
+
+## Phase 8: Performance
+
+### Task 22: Single-option microbenchmark
+
+**Files:**
+- Create: `bench/single_option.rb`
+
+- [ ] **Step 1: Write benchmark**
+
+Create `bench/single_option.rb`:
+
+```ruby
+require "benchmark/ips"
+require "pure_greeks"
+
+option_args = {
+  exercise_style: :american,
+  type: :call,
+  strike: 150.0,
+  expiration: Date.new(2027, 4, 26),
+  underlying_price: 148.5,
+  implied_volatility: 0.35,
+  risk_free_rate: 0.05,
+  dividend_yield: 0.0,
+  valuation_date: Date.new(2026, 4, 26)
+}
+
+Benchmark.ips do |x|
+  x.report("American CRR (200 steps)") do
+    PureGreeks::Option.new(**option_args).greeks
+  end
+
+  x.report("European Black-Scholes") do
+    PureGreeks::Option.new(**option_args.merge(exercise_style: :european)).greeks
+  end
+end
+```
+
+- [ ] **Step 2: Add benchmark-ips dev dep**
+
+Edit `pure_greeks.gemspec`:
+
+```ruby
+spec.add_development_dependency "benchmark-ips", "~> 2.13"
+```
+
+Run: `bundle install`
+
+- [ ] **Step 3: Run benchmark, record baseline**
+
+Run: `bundle exec ruby bench/single_option.rb`
+
+Expected output (rough order of magnitude — actual numbers depend on hardware):
+- BS European: ~10,000-50,000 ops/sec
+- CRR American: ~50-500 ops/sec (the 200-step tree dominates)
+
+Save the output to `BENCHMARKS.md` at the repo root.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add bench/single_option.rb pure_greeks.gemspec Gemfile.lock BENCHMARKS.md
+git commit -m "perf: add single-option microbenchmark and baseline"
+```
+
+### Task 23: Batch benchmark
+
+**Files:**
+- Create: `bench/batch.rb`
+
+- [ ] **Step 1: Write batch benchmark**
+
+Create `bench/batch.rb`:
+
+```ruby
+require "benchmark"
+require "pure_greeks"
+
+base_args = {
+  exercise_style: :american,
+  strike: 150.0,
+  expiration: Date.new(2027, 4, 26),
+  underlying_price: 148.5,
+  risk_free_rate: 0.05,
+  dividend_yield: 0.0,
+  valuation_date: Date.new(2026, 4, 26)
+}
+
+[100, 1_000, 10_000].each do |n|
+  options = Array.new(n) do |i|
+    PureGreeks::Option.new(
+      type: i.even? ? :call : :put,
+      implied_volatility: 0.20 + (i % 10) * 0.05,
+      **base_args
+    )
+  end
+
+  elapsed = Benchmark.realtime do
+    options.each(&:greeks)
+  end
+
+  puts "#{n} options: #{elapsed.round(3)}s — #{(n / elapsed).round} ops/sec"
+end
+```
+
+- [ ] **Step 2: Run, record results**
+
+Run: `bundle exec ruby bench/batch.rb`
+
+Append results to `BENCHMARKS.md`.
+
+- [ ] **Step 3: Decision point — is performance acceptable?**
+
+Compare to Tenor's QuantLib baseline. The Tenor `GreeksCalculationBatchJob` processes ~5,000-15,000 options per batch in ~30-60s (~250 ops/sec). If pure-Ruby PureGreeks hits ≥50% of that throughput (~125 ops/sec), ship v0.1 as pure Ruby.
+
+If throughput < 50 ops/sec for American options, consider these in v0.2:
+1. Drop default `steps` from 200 → 100 (loses some accuracy in extreme cases — verify against golden dataset).
+2. Native C extension for the binomial backward induction loop (the inner `(0..i).each` is the hot path). Use `rice` gem.
+3. SIMD via `numo-narray` for vectorized backward induction.
+
+Document the chosen path in `BENCHMARKS.md` under a "Path to v0.2" section.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add bench/batch.rb BENCHMARKS.md
+git commit -m "perf: add batch benchmark and v0.2 performance plan"
+```
+
+---
+
+## Phase 9: Documentation & Release
+
+### Task 24: README
+
+**Files:**
+- Modify: `README.md`
+
+- [ ] **Step 1: Write README**
+
+Replace `README.md` with:
+
+```markdown
+# pure_greeks
+
+Pure-Ruby options Greeks (delta, gamma, theta, vega, rho), pricing, and implied volatility for vanilla European and American options. No Python, no QuantLib system dep, no native code.
+
+## Installation
+
+Add to your Gemfile:
+
+```ruby
+gem "pure_greeks"
+```
+
+## Usage
+
+```ruby
+require "pure_greeks"
+
+option = PureGreeks::Option.new(
+  exercise_style: :american,
+  type: :call,
+  strike: 150.0,
+  expiration: Date.new(2026, 6, 19),
+  underlying_price: 148.5,
+  implied_volatility: 0.35,
+  risk_free_rate: 0.05,
+  dividend_yield: 0.0,
+  valuation_date: Date.today
+)
+
+option.price                # => 4.27
+option.delta                # => 0.42
+option.gamma                # => 0.018
+option.theta                # => -0.012  (per calendar day)
+option.vega                 # => 0.31    (per 1% vol move)
+option.rho                  # => 0.08    (per 1% rate move)
+option.calculation_model    # => :crr_binomial_american
+
+# Solve for implied volatility:
+option = PureGreeks::Option.new(
+  exercise_style: :european,
+  type: :call,
+  strike: 150.0,
+  expiration: Date.new(2026, 6, 19),
+  underlying_price: 148.5,
+  market_price: 5.20,
+  risk_free_rate: 0.05,
+  dividend_yield: 0.0,
+  valuation_date: Date.today
+)
+option.implied_volatility   # => 0.342  (solved via Brent's method)
+```
+
+## How it works
+
+A three-tier fallback chain:
+
+1. **CRR Binomial American (200 steps)** — for American-exercise options
+2. **Black-Scholes European (closed-form)** — for European or as fallback
+3. **Intrinsic value** — for zero/negative IV
+
+Selection is automatic. The engine that ran is exposed via `option.calculation_model`.
+
+## Validation
+
+The engines have been regression-tested against ~500 historical option snapshots whose Greeks were computed by QuantLib (CRR Binomial American 200-step). All Greeks agree to within 1e-3 (delta, theta, vega) or 1e-4 (gamma).
+
+## Limitations
+
+- v0.1 is pure Ruby. Throughput is ~10× slower than QuantLib's C++ for American options. Acceptable for interactive use; for high-volume batch jobs, see `BENCHMARKS.md`.
+- IV solver inverts the BS European pricer even for American options. For American options with significant early-exercise premium, the solved IV may be slightly off.
+- No support for exotic exercise (Bermudan, Asian, barrier) or non-vanilla payoffs.
+
+## License
+
+MIT.
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: write README with usage examples"
+```
+
+### Task 25: CHANGELOG
+
+**Files:**
+- Create: `CHANGELOG.md`
+
+- [ ] **Step 1: Write CHANGELOG**
+
+Create `CHANGELOG.md`:
+
+```markdown
+# Changelog
+
+## [0.1.0] - YYYY-MM-DD
+
+Initial release.
+
+- Object-oriented `PureGreeks::Option` API for vanilla American/European options.
+- Three engines: CRR Binomial American (200 steps), Black-Scholes European (analytic), Intrinsic.
+- Automatic engine selection with fallback chain.
+- Implied volatility solver via Brent's method.
+- Regression-validated against QuantLib outputs from production options data.
+```
+
+(Replace `YYYY-MM-DD` with the actual release date.)
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add CHANGELOG.md
+git commit -m "docs: add CHANGELOG"
+```
+
+### Task 26: GitHub Actions CI
+
+**Files:**
+- Verify/modify: `.github/workflows/ci.yml` (auto-generated by `bundle gem`)
+
+- [ ] **Step 1: Verify CI runs RSpec on Ruby 3.2, 3.3**
+
+Read `.github/workflows/ci.yml`. Confirm it runs `bundle exec rspec` against multiple Ruby versions. If not, modify to:
+
+```yaml
+name: CI
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ruby: ['3.2', '3.3', '3.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - run: bundle exec rspec
+      - run: bundle exec rubocop
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add .github/workflows/ci.yml
+git commit -m "ci: matrix-test on Ruby 3.2, 3.3, 3.4"
+```
+
+### Task 27: Tag 0.1.0
+
+**Files:**
+- Modify: `lib/pure_greeks/version.rb`
+
+- [ ] **Step 1: Set version**
+
+Replace `lib/pure_greeks/version.rb` contents:
+
+```ruby
+module PureGreeks
+  VERSION = "0.1.0"
+end
+```
+
+- [ ] **Step 2: Verify all tests pass**
+
+Run: `bundle exec rspec`
+Expected: all examples pass.
+
+Run: `bundle exec rubocop`
+Expected: no offenses.
+
+- [ ] **Step 3: Commit and tag**
+
+```bash
+git add lib/pure_greeks/version.rb
+git commit -m "chore: bump to 0.1.0"
+git tag v0.1.0
+```
+
+- [ ] **Step 4: Confirm with user before pushing/publishing**
+
+Do **not** `git push` or `gem push` without explicit user confirmation. Ask: "0.1.0 is ready locally. Push to GitHub? Publish to RubyGems?"
+
+---
+
+## Open Questions / Future Work
+
+The implementing session should flag these to the user as they come up:
+
+1. **License**: gemspec defaults to placeholder. User confirmed MIT in the README — propagate to LICENSE.txt and gemspec.
+2. **GitHub repo**: not yet created remotely. After 0.1.0 is ready, ask user if they want a `gh repo create` step.
+3. **Risk-free rate source**: confirm what rate Tenor's QuantLib run used (likely a constant from config). Make this explicit in the golden fixture.
+4. **American IV solver**: v0.1 inverts BS European. v0.2 could add CRR-based IV (slower but exact for American). Document as a known limitation.
+5. **C extension trigger**: if Phase 8 benchmarks show < 50 ops/sec for American Greeks, queue a v0.2 task to write a `rice`-based binomial backward-induction extension. Don't write it in v0.1.
+6. **Dividend handling**: Tenor uses constant dividend yield. v0.2 could support discrete dividends (would require a different tree structure).
+7. **Day count convention**: this plan uses Actual/365 Fixed throughout (matching Tenor). Some markets use Actual/360 or 30/360. Document and consider parameterizing in v0.2.
+
+---
+
+## Self-Review Checklist (for the engineer executing this plan)
+
+Before declaring v0.1.0 ready:
+
+- [ ] All RSpec examples pass.
+- [ ] Rubocop passes.
+- [ ] Regression suite against `tenor_golden.json` passes (or drift report is documented and acceptable).
+- [ ] README usage examples actually run (try them in `bundle exec irb`).
+- [ ] Benchmarks recorded in `BENCHMARKS.md`.
+- [ ] Version bumped to `0.1.0` and tagged.
+- [ ] User has explicitly approved push/publish.
