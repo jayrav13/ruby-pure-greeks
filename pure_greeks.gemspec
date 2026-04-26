@@ -33,9 +33,8 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  # Uncomment to register a new dependency of your gem
-  # spec.add_dependency "example-gem", "~> 1.0"
-
-  # For more information and examples about making a new gem, check out our
-  # guide at: https://bundler.io/guides/creating_gem.html
+  spec.add_dependency "distribution", "~> 0.8"
+  # `distribution` requires `prime`, which was extracted from stdlib in Ruby 3.1.
+  # Declare it explicitly so `gem install pure_greeks` works on bare Ruby 3.2+.
+  spec.add_dependency "prime", "~> 0.1"
 end

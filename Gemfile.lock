@@ -2,6 +2,8 @@ PATH
   remote: .
   specs:
     pure_greeks (0.1.0)
+      distribution (~> 0.8)
+      prime (~> 0.1)
 
 GEM
   remote: https://rubygems.org/
@@ -9,7 +11,9 @@ GEM
     ast (2.4.3)
     date (3.5.1)
     diff-lcs (1.6.2)
+    distribution (0.8.0)
     erb (6.0.4)
+    forwardable (1.4.0)
     io-console (0.8.2)
     irb (1.18.0)
       pp (>= 0.6.0)
@@ -26,6 +30,9 @@ GEM
     pp (0.6.3)
       prettyprint
     prettyprint (0.2.0)
+    prime (0.1.4)
+      forwardable
+      singleton
     prism (1.9.0)
     psych (5.3.1)
       date
@@ -68,6 +75,7 @@ GEM
       parser (>= 3.3.7.2)
       prism (~> 1.7)
     ruby-progressbar (1.13.0)
+    singleton (0.3.0)
     stringio (3.2.0)
     tsort (0.2.0)
     unicode-display_width (3.2.0)
@@ -89,7 +97,9 @@ CHECKSUMS
   ast (2.4.3) sha256=954615157c1d6a382bc27d690d973195e79db7f55e9765ac7c481c60bdb4d383
   date (3.5.1) sha256=750d06384d7b9c15d562c76291407d89e368dda4d4fff957eb94962d325a0dc0
   diff-lcs (1.6.2) sha256=9ae0d2cba7d4df3075fe8cd8602a8604993efc0dfa934cff568969efb1909962
+  distribution (0.8.0) sha256=90673c806a1dcb180e88229f8aea70101c3a217a34f2e2c38a9836a5f31109fd
   erb (6.0.4) sha256=38e3803694be357fe2bfe312487c74beaf9fb4e5beb3e22498952fe1645b95d9
+  forwardable (1.4.0) sha256=f1cd40cc9812937980e1c76f1aa053660990a7c9b6a98fc37d945468afcce838
   io-console (0.8.2) sha256=d6e3ae7a7cc7574f4b8893b4fca2162e57a825b223a177b7afa236c5ef9814cc
   irb (1.18.0) sha256=de9454a0703a54704b9811a5ef31a60c86949fbf4013fcf244fabc7c775248e3
   json (2.19.4) sha256=670a7d333fb3b18ca5b29cb255eb7bef099e40d88c02c80bd42a3f30fe5239ac
@@ -99,6 +109,7 @@ CHECKSUMS
   parser (3.3.11.1) sha256=d17ace7aabe3e72c3cc94043714be27cc6f852f104d81aa284c2281aecc65d54
   pp (0.6.3) sha256=2951d514450b93ccfeb1df7d021cae0da16e0a7f95ee1e2273719669d0ab9df6
   prettyprint (0.2.0) sha256=2bc9e15581a94742064a3cc8b0fb9d45aae3d03a1baa6ef80922627a0766f193
+  prime (0.1.4) sha256=4d755ebf7c2994a6f3a3fee0d072063be3fff2d4042ebff6cd5eebd4747a225e
   prism (1.9.0) sha256=7b530c6a9f92c24300014919c9dcbc055bf4cdf51ec30aed099b06cd6674ef85
   psych (5.3.1) sha256=eb7a57cef10c9d70173ff74e739d843ac3b2c019a003de48447b2963d81b1974
   pure_greeks (0.1.0)
@@ -116,6 +127,7 @@ CHECKSUMS
   rubocop (1.86.1) sha256=44415f3f01d01a21e01132248d2fd0867572475b566ca188a0a42133a08d4531
   rubocop-ast (1.49.1) sha256=4412f3ee70f6fe4546cc489548e0f6fcf76cafcfa80fa03af67098ffed755035
   ruby-progressbar (1.13.0) sha256=80fc9c47a9b640d6834e0dc7b3c94c9df37f08cb072b7761e4a71e22cff29b33
+  singleton (0.3.0) sha256=83ea1bca5f4aa34d00305ab842a7862ea5a8a11c73d362cb52379d94e9615778
   stringio (3.2.0) sha256=c37cb2e58b4ffbd33fe5cd948c05934af997b36e0b6ca6fdf43afa234cf222e1
   tsort (0.2.0) sha256=9650a793f6859a43b6641671278f79cfead60ac714148aabe4e3f0060480089f
   unicode-display_width (3.2.0) sha256=0cdd96b5681a5949cdbc2c55e7b420facae74c4aaf9a9815eee1087cb1853c42
