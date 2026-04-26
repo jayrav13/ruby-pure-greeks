@@ -19,5 +19,21 @@ RSpec.describe PureGreeks::Engines::BlackScholesEuropean do
     it "matches Hull reference for at-the-money call" do
       expect(described_class.price(**hull_inputs)).to be_within(1e-3).of(10.4506)
     end
+
+    it "matches Hull reference for at-the-money put" do
+      expect(described_class.price(**hull_inputs.merge(type: :put))).to be_within(1e-3).of(5.5735)
+    end
+
+    it "satisfies put-call parity" do
+      call = described_class.price(**hull_inputs)
+      put = described_class.price(**hull_inputs.merge(type: :put))
+      s = 100.0
+      k = 100.0
+      r = 0.05
+      q = 0.0
+      t = 1.0
+      parity = call - put - (s * ::Math.exp(-q * t) - k * ::Math.exp(-r * t))
+      expect(parity).to be_within(1e-10).of(0.0)
+    end
   end
 end

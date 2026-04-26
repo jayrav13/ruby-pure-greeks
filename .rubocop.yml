@@ -48,3 +48,8 @@ Metrics/PerceivedComplexity:
 
 Layout/LineLength:
   Max: 130
+
+Metrics/BlockLength:
+  Exclude:
+    - "spec/**/*.rb"
+    - "*.gemspec"
