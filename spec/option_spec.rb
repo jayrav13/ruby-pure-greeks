@@ -76,4 +76,32 @@ RSpec.describe PureGreeks::Option do
       expect(option.calculation_model).to eq(:crr_binomial_american)
     end
   end
+
+  describe "#implied_volatility (when market_price given)" do
+    let(:european_args) do
+      {
+        exercise_style: :european,
+        type: :call,
+        strike: 100.0,
+        expiration: expiration,
+        underlying_price: 100.0,
+        market_price: 10.4506,
+        risk_free_rate: 0.05,
+        dividend_yield: 0.0,
+        valuation_date: valuation_date
+      }
+    end
+
+    it "solves IV ≈ 0.20 for known Hull price" do
+      option = described_class.new(**european_args)
+      expect(option.implied_volatility).to be_within(1e-4).of(0.20)
+    end
+
+    it "raises when market_price absent and no IV given" do
+      args = european_args.dup
+      args.delete(:market_price)
+      option = described_class.new(**args)
+      expect { option.implied_volatility }.to raise_error(PureGreeks::InvalidInputError)
+    end
+  end
 end

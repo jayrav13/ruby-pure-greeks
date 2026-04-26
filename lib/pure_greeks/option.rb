@@ -3,6 +3,8 @@
 require "date"
 require "pure_greeks/errors"
 require "pure_greeks/engines/fallback_chain"
+require "pure_greeks/engines/black_scholes_european"
+require "pure_greeks/implied_volatility/brent_solver"
 
 module PureGreeks
   class Option
@@ -11,7 +13,7 @@ module PureGreeks
     DAYS_PER_YEAR = 365.0
 
     attr_reader :exercise_style, :type, :strike, :expiration, :underlying_price,
-                :implied_volatility, :risk_free_rate, :dividend_yield, :valuation_date
+                :risk_free_rate, :dividend_yield, :valuation_date
 
     def initialize(exercise_style:, type:, strike:, expiration:, underlying_price:,
                    risk_free_rate:, dividend_yield:, valuation_date:,
@@ -64,6 +66,23 @@ module PureGreeks
 
     def calculation_model
       greeks.model
+    end
+
+    def implied_volatility
+      return @implied_volatility if @implied_volatility
+      raise InvalidInputError, "market_price required to solve for implied_volatility" unless @market_price
+
+      @implied_volatility = ImpliedVolatility::BrentSolver.find_root(lower: 1e-6, upper: 5.0, tolerance: 1e-6) do |sigma|
+        Engines::BlackScholesEuropean.price(
+          type: @type,
+          strike: @strike,
+          underlying_price: @underlying_price,
+          time_to_expiry: time_to_expiry,
+          implied_volatility: sigma,
+          risk_free_rate: @risk_free_rate,
+          dividend_yield: @dividend_yield
+        ) - @market_price
+      end
     end
 
     private
