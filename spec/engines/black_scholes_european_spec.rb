@@ -36,4 +36,22 @@ RSpec.describe PureGreeks::Engines::BlackScholesEuropean do
       expect(parity).to be_within(1e-10).of(0.0)
     end
   end
+
+  describe ".calculate" do
+    it "returns Greeks struct matching Hull reference for ATM call" do
+      g = described_class.calculate(**hull_inputs)
+      expect(g.price).to be_within(1e-3).of(10.4506)
+      expect(g.delta).to be_within(1e-4).of(0.6368)
+      expect(g.gamma).to be_within(1e-5).of(0.01876)
+      expect(g.theta).to be_within(1e-4).of(-0.01757)
+      expect(g.vega).to be_within(1e-4).of(0.37524)
+      expect(g.rho).to be_within(1e-3).of(0.53232)
+      expect(g.model).to eq(:black_scholes_european)
+    end
+
+    it "returns negative delta for put" do
+      g = described_class.calculate(**hull_inputs.merge(type: :put))
+      expect(g.delta).to be_within(1e-4).of(-0.3632)
+    end
+  end
 end
