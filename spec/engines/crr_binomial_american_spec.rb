@@ -46,4 +46,29 @@ RSpec.describe PureGreeks::Engines::CrrBinomialAmerican do
       expect(am_put).to be > 5.5735
     end
   end
+
+  describe ".calculate" do
+    it "returns Greeks struct for ATM American call (matches BS within tree tolerance)" do
+      g = described_class.calculate(**hull_inputs)
+      expect(g.price).to be_within(0.02).of(10.4506)
+      expect(g.delta).to be_within(0.005).of(0.6368)
+      expect(g.gamma).to be_within(0.001).of(0.01876)
+      expect(g.model).to eq(:crr_binomial_american)
+    end
+
+    it "computes theta close to Black-Scholes equivalent" do
+      g = described_class.calculate(**hull_inputs)
+      expect(g.theta).to be_within(0.002).of(-0.01757)
+    end
+
+    it "computes vega close to Black-Scholes equivalent" do
+      g = described_class.calculate(**hull_inputs)
+      expect(g.vega).to be_within(0.005).of(0.37524)
+    end
+
+    it "computes rho close to Black-Scholes equivalent" do
+      g = described_class.calculate(**hull_inputs)
+      expect(g.rho).to be_within(0.01).of(0.53232)
+    end
+  end
 end
