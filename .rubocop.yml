@@ -20,6 +20,7 @@ Naming/MethodParameterName:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
     - "lib/pure_greeks/option.rb"
 
 # The Option class's public constructor takes 10 named option-pricing
@@ -28,30 +29,35 @@ Metrics/ParameterLists:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
     - "lib/pure_greeks/option.rb"
 
 Metrics/AbcSize:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
     - "lib/pure_greeks/option.rb"
 
 Metrics/MethodLength:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
     - "lib/pure_greeks/option.rb"
 
 Metrics/CyclomaticComplexity:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
     - "lib/pure_greeks/option.rb"
 
 Metrics/PerceivedComplexity:
   Exclude:
     - "lib/pure_greeks/math/**/*.rb"
     - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
     - "lib/pure_greeks/option.rb"
 
 Layout/LineLength:
@@ -61,3 +67,6 @@ Metrics/BlockLength:
   Exclude:
     - "spec/**/*.rb"
     - "*.gemspec"
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
