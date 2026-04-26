@@ -159,34 +159,68 @@ Per Tenor `CLAUDE.md` memory: writes against the production DB require explicit 
 ### Task 1: Initialize gem skeleton with bundler
 
 **Files:**
-- Run: `bundle gem pure_greeks .` (in `~/Code/pure_greeks/`, populating the existing dir)
+- Scaffold via `bundle gem` in a temp dir, then copy results into `~/Code/pure_greeks/` to preserve the existing `.git` and `PLAN.md`.
 
-- [ ] **Step 1: Run bundle gem**
+The repo already exists at `~/Code/pure_greeks/` with an initial commit on `main` containing `PLAN.md`. `bundle gem` requires a non-existent target directory, so we scaffold to a temp location and copy files in.
+
+- [ ] **Step 1: Scaffold to temp location**
 
 ```bash
-cd ~/Code/pure_greeks
-bundle gem . --test=rspec --linter=rubocop --ci=github --no-mit --no-coc --no-changelog
+cd /tmp
+rm -rf /tmp/pure_greeks_scaffold
+bundle gem pure_greeks_scaffold --test=rspec --linter=rubocop --ci=github --no-mit --no-coc --no-changelog
 ```
 
-Expected: gem skeleton populated. If it complains the dir is not empty, run with `--force` or temporarily move `PLAN.md` aside, then move it back.
+Expected: `/tmp/pure_greeks_scaffold/` exists with full gem layout (lib/, spec/, gemspec, Rakefile, .git, etc.).
 
-- [ ] **Step 2: Verify skeleton**
+- [ ] **Step 2: Drop the scaffold's git so we don't overwrite ours**
 
-Run: `bundle install`
-Expected: bundler installs default deps (rspec, rubocop) successfully.
+```bash
+rm -rf /tmp/pure_greeks_scaffold/.git
+```
 
-Run: `bundle exec rspec`
-Expected: 0 examples, 0 failures (skeleton has no tests yet).
+- [ ] **Step 3: Rename gem internals from `pure_greeks_scaffold` → `pure_greeks`**
 
-- [ ] **Step 3: Set Ruby version floor**
+The scaffold uses the dir name throughout. Rename:
 
-Edit `pure_greeks.gemspec`:
+```bash
+cd /tmp/pure_greeks_scaffold
+mv pure_greeks_scaffold.gemspec pure_greeks.gemspec
+mv lib/pure_greeks_scaffold lib/pure_greeks
+mv lib/pure_greeks_scaffold.rb lib/pure_greeks.rb
+mv spec/pure_greeks_scaffold_spec.rb spec/pure_greeks_spec.rb
+# Replace identifiers inside files (sed -i '' is BSD/macOS syntax)
+grep -rl 'pure_greeks_scaffold\|PureGreeksScaffold' . | xargs sed -i '' 's/PureGreeksScaffold/PureGreeks/g; s/pure_greeks_scaffold/pure_greeks/g'
+```
+
+- [ ] **Step 4: Copy scaffold into our repo**
+
+```bash
+cd /tmp/pure_greeks_scaffold
+# Use cp -r with /. to copy hidden dotfiles (.rspec, .rubocop.yml, .github/) too
+cp -r ./. ~/Code/pure_greeks/
+rm -rf /tmp/pure_greeks_scaffold
+```
+
+- [ ] **Step 5: Set Ruby version floor**
+
+Edit `~/Code/pure_greeks/pure_greeks.gemspec`:
 
 ```ruby
 spec.required_ruby_version = ">= 3.2.0"
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Verify skeleton**
+
+```bash
+cd ~/Code/pure_greeks
+bundle install
+bundle exec rspec
+```
+
+Expected: bundler installs deps; `rspec` reports `0 examples, 0 failures` (or whatever scaffold-default specs ran — clean either way).
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add .
