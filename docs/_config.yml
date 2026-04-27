@@ -1,0 +1,12 @@
+title: pure_greeks
+description: Pure-Ruby options Greeks, pricing, and implied volatility — no QuantLib, no native code.
+theme: jekyll-theme-cayman
+
+github:
+  repository_url: https://github.com/jayrav13/ruby-pure-greeks
+  zip_url: https://github.com/jayrav13/ruby-pure-greeks/archive/refs/heads/main.zip
+
+exclude:
+  - "*.gem"
+  - Gemfile
+  - Gemfile.lock
