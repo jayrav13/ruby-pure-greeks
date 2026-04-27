@@ -12,3 +12,6 @@
 
 # local tooling (Claude Code plugins, hooks, per-machine settings)
 /.claude/
+
+# CI / local vendored bundles (bundler-cache: true vendors here)
+/vendor/

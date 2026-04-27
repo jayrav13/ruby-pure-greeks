@@ -6,6 +6,11 @@ AllCops:
     # tools/ holds one-shot diagnostic + export scripts, not gem code.
     # Style enforcement here would fight script ergonomics for no payoff.
     - "tools/**/*"
+    # CI uses bundler-cache, which vendors gems into vendor/bundle/.
+    # Without these excludes, rubocop lints every third-party gem source
+    # file and produces a wall of "errors" that aren't ours to fix.
+    - "vendor/**/*"
+    - "tmp/**/*"
 
 Lint/ConstantDefinitionInBlock:
   Exclude:
