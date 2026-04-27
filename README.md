@@ -8,6 +8,14 @@ Pure-Ruby options Greeks (delta, gamma, theta, vega, rho), pricing, and implied 
 
 **Documentation, examples, and engine internals: https://jayravaliya.com/ruby-pure-greeks/**
 
+## Author's note
+
+Hi folks! I've been working on some options-related projects recently and came across the need to calculate options greeks in Ruby. The solution was to invoke a Python script from a Rails app to generate these numbers and then ingest. That was fine, but I saw that there was a vacuum in this type of library in the Ruby world, so I decided to pair with Claude and make it.
+
+Check out the great details available on the Pages site about the different strategies available. Contributions welcome!
+
+---
+
 ## Installation
 
 Add to your Gemfile:
