@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "lib/pure_greeks/version.rb"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: rubygems
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Run tests
+        run: bundle exec rspec
+
+      - name: Run linter
+        run: bundle exec rubocop --parallel -f github
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(ruby -r ./lib/pure_greeks/version -e 'puts PureGreeks::VERSION')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build gem
+        run: gem build pure_greeks.gemspec
+
+      - name: Configure Trusted Publishing credentials
+        uses: rubygems/configure-rubygems-credentials@main
+
+      - name: Publish to RubyGems
+        run: gem push pure_greeks-${{ steps.version.outputs.version }}.gem
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          GEM_FILE: pure_greeks-${{ steps.version.outputs.version }}.gem
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            "$GEM_FILE"

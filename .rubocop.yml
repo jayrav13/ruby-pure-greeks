@@ -1,0 +1,85 @@
+AllCops:
+  TargetRubyVersion: 3.2
+  NewCops: disable
+  SuggestExtensions: false
+  Exclude:
+    # tools/ holds one-shot diagnostic + export scripts, not gem code.
+    # Style enforcement here would fight script ergonomics for no payoff.
+    - "tools/**/*"
+    # CI uses bundler-cache, which vendors gems into vendor/bundle/.
+    # Without these excludes, rubocop lints every third-party gem source
+    # file and produces a wall of "errors" that aren't ours to fix.
+    - "vendor/**/*"
+    - "tmp/**/*"
+
+Lint/ConstantDefinitionInBlock:
+  Exclude:
+    - "spec/**/*.rb"
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes
+
+# Math/finance code uses standard short variable names (S, K, T, r, q,
+# sigma) and formula-shaped methods. The next few rules suppress style
+# complaints that fight that domain — applied only to the math/engine
+# layers, not the public API or surrounding plumbing.
+Style/Documentation:
+  Enabled: false
+
+Naming/MethodParameterName:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
+    - "lib/pure_greeks/option.rb"
+
+# The Option class's public constructor takes 10 named option-pricing
+# inputs and validates them — that's the contract, not a code smell.
+Metrics/ParameterLists:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
+    - "lib/pure_greeks/option.rb"
+
+Metrics/AbcSize:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
+    - "lib/pure_greeks/option.rb"
+
+Metrics/MethodLength:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
+    - "lib/pure_greeks/option.rb"
+
+Metrics/CyclomaticComplexity:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
+    - "lib/pure_greeks/option.rb"
+
+Metrics/PerceivedComplexity:
+  Exclude:
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
+    - "lib/pure_greeks/option.rb"
+
+Layout/LineLength:
+  Max: 130
+
+Metrics/BlockLength:
+  Exclude:
+    - "spec/**/*.rb"
+    - "*.gemspec"
+    - "lib/pure_greeks/math/**/*.rb"
+    - "lib/pure_greeks/engines/**/*.rb"
+    - "lib/pure_greeks/implied_volatility/**/*.rb"
