@@ -6,7 +6,7 @@
 
 Pure-Ruby options Greeks (delta, gamma, theta, vega, rho), pricing, and implied volatility for vanilla European and American options. No Python, no QuantLib system dep, no native code.
 
-**Documentation, examples, and engine internals: https://jayrav13.github.io/ruby-pure-greeks/**
+**Documentation, examples, and engine internals: https://jayravaliya.com/ruby-pure-greeks/**
 
 ## Installation
 
@@ -41,7 +41,7 @@ option.price   # => 4.27
 option.delta   # => 0.42
 ```
 
-For the full API, the implied-volatility solver, how the three engines fall back to one another, validation methodology, and limitations, see the [documentation site](https://jayrav13.github.io/ruby-pure-greeks/).
+For the full API, the implied-volatility solver, how the three engines fall back to one another, validation methodology, and limitations, see the [documentation site](https://jayravaliya.com/ruby-pure-greeks/).
 
 ## Development
 
