@@ -38,8 +38,11 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "distribution", "~> 0.8"
-  # `distribution` requires `prime`, which was extracted from stdlib in Ruby 3.1.
-  # Declare it explicitly so `gem install pure_greeks` works on bare Ruby 3.2+.
+  # `distribution` requires `prime` and `bigdecimal`, both of which were
+  # extracted from default gems (prime in Ruby 3.1, bigdecimal in 3.4).
+  # Declare explicitly so `gem install pure_greeks` works on bare Ruby 3.2+
+  # — and importantly, so CI passes on the 3.4 matrix entry.
+  spec.add_dependency "bigdecimal", "~> 3.0"
   spec.add_dependency "prime", "~> 0.1"
 
   spec.add_development_dependency "benchmark-ips", "~> 2.13"

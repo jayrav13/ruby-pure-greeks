@@ -2,6 +2,7 @@ PATH
   remote: .
   specs:
     pure_greeks (0.1.0)
+      bigdecimal (~> 3.0)
       distribution (~> 0.8)
       prime (~> 0.1)
 
@@ -10,6 +11,7 @@ GEM
   specs:
     ast (2.4.3)
     benchmark-ips (2.14.0)
+    bigdecimal (3.3.1)
     date (3.5.1)
     diff-lcs (1.6.2)
     distribution (0.8.0)
@@ -98,6 +100,7 @@ DEPENDENCIES
 CHECKSUMS
   ast (2.4.3) sha256=954615157c1d6a382bc27d690d973195e79db7f55e9765ac7c481c60bdb4d383
   benchmark-ips (2.14.0) sha256=b72bc8a65d525d5906f8cd94270dccf73452ee3257a32b89fbd6684d3e8a9b1d
+  bigdecimal (3.3.1) sha256=eaa01e228be54c4f9f53bf3cc34fe3d5e845c31963e7fcc5bedb05a4e7d52218
   date (3.5.1) sha256=750d06384d7b9c15d562c76291407d89e368dda4d4fff957eb94962d325a0dc0
   diff-lcs (1.6.2) sha256=9ae0d2cba7d4df3075fe8cd8602a8604993efc0dfa934cff568969efb1909962
   distribution (0.8.0) sha256=90673c806a1dcb180e88229f8aea70101c3a217a34f2e2c38a9836a5f31109fd
