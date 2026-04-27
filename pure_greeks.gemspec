@@ -41,4 +41,6 @@ Gem::Specification.new do |spec|
   # `distribution` requires `prime`, which was extracted from stdlib in Ruby 3.1.
   # Declare it explicitly so `gem install pure_greeks` works on bare Ruby 3.2+.
   spec.add_dependency "prime", "~> 0.1"
+
+  spec.add_development_dependency "benchmark-ips", "~> 2.13"
 end
