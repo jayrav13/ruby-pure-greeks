@@ -45,9 +45,17 @@ GOLDEN_DATASET_QUERY = <<~SQL
     AND s.strike IS NOT NULL
     AND s.underlying_price IS NOT NULL
     AND s.implied_volatility IS NOT NULL
-    AND s.implied_volatility > 0
+    -- IV band: drop near-zero (Tenor's QuantLib quietly floors σ → divergent
+    -- price/Greeks vs. our straight BS) and >200% (illiquid market noise).
+    AND s.implied_volatility BETWEEN 0.05 AND 2.0
     AND s.expiration IS NOT NULL
     AND s.expiration > s.snapshot_date
+    -- Drop very short tenors: 200-step CRR has O(1/N) bias that blows up
+    -- as T -> 0; <7 days isn't a realistic v0.1 use case anyway.
+    AND (s.expiration - s.snapshot_date) >= 7
+    -- Moneyness band: drop deep ITM/OTM where pricing is dominated by
+    -- intrinsic and any small discount-rate convention difference shows.
+    AND (s.underlying_price / s.strike) BETWEEN 0.5 AND 2.0
     AND g.risk_free_rate IS NOT NULL
     AND g.delta IS NOT NULL
     AND g.gamma IS NOT NULL

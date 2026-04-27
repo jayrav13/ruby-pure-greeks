@@ -2,6 +2,14 @@ AllCops:
   TargetRubyVersion: 3.2
   NewCops: disable
   SuggestExtensions: false
+  Exclude:
+    # tools/ holds one-shot diagnostic + export scripts, not gem code.
+    # Style enforcement here would fight script ergonomics for no payoff.
+    - "tools/**/*"
+
+Lint/ConstantDefinitionInBlock:
+  Exclude:
+    - "spec/**/*.rb"
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes
