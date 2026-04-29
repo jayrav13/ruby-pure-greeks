@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-28
+
+### Fixed
+
+- Patch `documentation_uri` metadata so it points at https://jayravaliya.com/ruby-pure-greeks/ (the canonical docs URL). 0.1.0's metadata pointed at https://jayrav13.github.io/ruby-pure-greeks/, which 404s. RubyGems metadata is immutable per published version, so this required a patch release even though the gemspec on `main` was already correct (fixed in PR #2).
+
 ## [0.1.0] - 2026-04-26
 
 Initial release.
