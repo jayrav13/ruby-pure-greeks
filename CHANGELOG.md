@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `bin/ci-watch <pr-number> [--poll [interval]]` — wraps `gh pr checks` with structured exit codes (0 passed / 1 failed / 2 in-progress) for scripting CI verification.
+- `bin/release-watch [--poll [interval]]` — watches the release workflow run and confirms the gem is live on RubyGems with the expected version. Same exit-code shape as `ci-watch`.
+
 ## [0.1.0] - 2026-04-26
 
 Initial release.

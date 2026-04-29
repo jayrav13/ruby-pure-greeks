@@ -94,6 +94,8 @@ Releases are tag-driven through CI — no manual `gem push` needed.
 3. Open a PR; CI must be green.
 4. Merge to `main`. The release workflow (`.github/workflows/release.yml`) detects the version bump, runs the test suite, builds the gem, publishes to RubyGems via [Trusted Publishing](https://guides.rubygems.org/trusted-publishing/) (no API key), creates a `vX.Y.Z` git tag, and opens a GitHub Release with auto-generated notes from the merged PRs.
 
+To monitor a release in flight, use `bin/release-watch` (single check) or `bin/release-watch --poll 30` (poll until the workflow completes and the new version indexes on RubyGems). For PR CI checks, `bin/ci-watch <pr-number> [--poll]` wraps `gh pr checks` with structured exit codes.
+
 The RubyGems version badge above refreshes automatically once the new version indexes on rubygems.org (usually within a minute).
 
 ## Contributing
